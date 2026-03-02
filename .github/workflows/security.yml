@@ -47,7 +47,7 @@ jobs:
     if: needs.workspace_check.outputs.has_members == 'true'
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
           arguments: --all-features
