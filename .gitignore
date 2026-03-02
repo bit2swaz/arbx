@@ -1,0 +1,12 @@
+/target
+/contracts/out
+/contracts/cache
+/contracts/lib
+*.env
+.env
+.env.*
+!.env.example
+logs/
+flamegraph.svg
+perf.data
+*.log
