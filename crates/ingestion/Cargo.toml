@@ -1,0 +1,19 @@
+[package]
+name    = "arbx-ingestion"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arbx-common       = { workspace = true }
+tokio             = { workspace = true }
+alloy             = { workspace = true }
+dashmap           = { workspace = true }
+tracing           = { workspace = true }
+anyhow            = { workspace = true }
+futures-util      = { workspace = true }
+tokio-tungstenite = { workspace = true }
+
+[dev-dependencies]
+tokio      = { workspace = true }
+mockall    = { workspace = true }
+tokio-test = { workspace = true }

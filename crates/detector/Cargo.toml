@@ -1,0 +1,15 @@
+[package]
+name    = "arbx-detector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arbx-common = { workspace = true }
+alloy        = { workspace = true }
+tracing      = { workspace = true }
+anyhow       = { workspace = true }
+thiserror    = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+mockall  = { workspace = true }

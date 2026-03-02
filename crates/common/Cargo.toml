@@ -1,0 +1,17 @@
+[package]
+name    = "arbx-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml        = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+prometheus  = { workspace = true }
+
+[dev-dependencies]
+tokio       = { workspace = true }
+proptest    = { workspace = true }

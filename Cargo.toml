@@ -1,3 +1,72 @@
+[package]
+name = "arbx"
+version = "0.1.0"
+edition = "2021"
+default-run = "arbx"
+
 [workspace]
-members = []
+members = [
+    "crates/common",
+    "crates/ingestion",
+    "crates/detector",
+    "crates/simulator",
+    "crates/executor",
+]
 resolver = "2"
+
+# ─── workspace-level shared dependencies ────────────────────────────────────
+[workspace.dependencies]
+# Async runtime
+tokio            = { version = "1",    features = ["full"] }
+# Ethereum interaction
+alloy            = { version = "1",    features = ["full"] }
+# EVM simulation
+revm             = { version = "34" }
+# Concurrency
+dashmap          = "6"
+# Serialisation
+serde            = { version = "1",    features = ["derive"] }
+serde_json       = "1"
+toml             = "1"
+# Logging / tracing
+tracing          = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Error handling
+anyhow           = "1"
+thiserror        = "2"
+# Networking
+futures-util     = "0.3"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+# Metrics
+prometheus       = "0.14"
+# Property testing
+proptest         = "1"
+# Async test utilities
+tokio-test       = "0.4"
+# Mock generation
+mockall          = "0.14"
+
+# ─── workspace crates ────────────────────────────────────────────────────────
+arbx-common    = { path = "crates/common" }
+arbx-ingestion = { path = "crates/ingestion" }
+arbx-detector  = { path = "crates/detector" }
+arbx-simulator = { path = "crates/simulator" }
+arbx-executor  = { path = "crates/executor" }
+
+# ─── binary entry point ──────────────────────────────────────────────────────
+[[bin]]
+name = "arbx"
+path = "bin/arbx.rs"
+
+# ─── root-package dependencies (the arbx binary) ─────────────────────────────
+[dependencies]
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }
+arbx-common        = { workspace = true }
+arbx-ingestion     = { workspace = true }
+arbx-detector      = { workspace = true }
+arbx-simulator     = { workspace = true }
+arbx-executor      = { workspace = true }
+

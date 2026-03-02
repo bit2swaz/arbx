@@ -1,0 +1,32 @@
+# Arbitrum Sepolia testnet overrides — layered on top of default.toml
+# chain_id 421614 = Arbitrum Sepolia
+
+[network]
+rpc_url            = "${ARBITRUM_SEPOLIA_RPC_URL}"
+sequencer_feed_url = "wss://sepolia-rollup.arbitrum.io/feed"
+chain_id           = 421614
+
+[strategy]
+min_profit_floor_usd  = 0.01   # Lower floor on testnet — no real capital at risk
+gas_buffer_multiplier = 1.5    # Higher buffer to account for testnet gas variability
+max_gas_gwei          = 10.0   # Testnet gas prices are spiky and irrelevant
+flash_loan_fee_bps    = 0
+
+[pools]
+# Balancer V2 is not deployed on Arbitrum Sepolia; use placeholder for testing
+balancer_vault     = "0x0000000000000000000000000000000000000000"
+uniswap_v3_factory = "0x0000000000000000000000000000000000000000"
+camelot_factory    = "0x0000000000000000000000000000000000000000"
+sushiswap_factory  = "0x0000000000000000000000000000000000000000"
+traderjoe_factory  = "0x0000000000000000000000000000000000000000"
+
+[execution]
+contract_address           = "${ARB_EXECUTOR_ADDRESS}"
+private_key                = "${PRIVATE_KEY}"
+max_concurrent_simulations = 4    # Fewer workers on testnet
+gas_estimate_buffer        = 1.5
+node_interface_address     = "0x00000000000000000000000000000000000000C8"
+
+[observability]
+log_level    = "debug"   # Verbose on testnet for easier debugging
+metrics_port = 9090

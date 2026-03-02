@@ -1,6 +1,6 @@
 [toolchain]
 # Pin to an exact stable release so every developer and CI runner uses
 # identical compiler behaviour.  Bump deliberately — never let it float.
-channel    = "1.88.0"
+channel    = "1.91.0"
 components = ["rustfmt", "clippy", "rust-src"]
 targets    = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
