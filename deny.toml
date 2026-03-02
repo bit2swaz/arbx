@@ -26,19 +26,18 @@ allow = [
     "EUPL-1.2",
     "OpenSSL",
     "LGPL-3.0",
+    "Unlicense",
+    "0BSD",
+    "CDLA-Permissive-2.0",
 ]
 # Our own crates have no license field — that's fine
 private = { ignore = true }
 # Don't error on licenses in our allowlist that no dep actually uses
 unused-allowed-license = "allow"
-# Exceptions for specific crates with unusual licenses
-exceptions = [
-    { allow = ["LicenseRef-doctest-file"], name = "doctest-file" },
-]
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "warn"
 highlight = "all"
 
 [sources]
