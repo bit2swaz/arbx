@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Placeholder values — real secrets live in GitHub Actions Secrets
+  ARBITRUM_RPC_URL: "https://arb1.alchemyapi.io/v2/test"
+  ARBITRUM_SEPOLIA_RPC_URL: "https://arb-sepolia.g.alchemy.com/v2/test"
+  ARB_EXECUTOR_ADDRESS: "0x0000000000000000000000000000000000000001"
+  PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+jobs:
+  check:
+    name: Check, Lint, Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned via rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # The toolchain field is read automatically from rust-toolchain.toml,
+          # but we pass it explicitly here so CI mirrors the local dev environment.
+          toolchain: "1.88.0"
+          components: rustfmt, clippy
+
+      - name: Cache Cargo registry, git, and build artefacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Bust cache if deny.toml or Cargo.lock changes
+          shared-key: "arbx-stable"
+
+      - name: Verify Cargo.lock is committed and up to date
+        run: cargo update --locked
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy — deny all warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Install cargo-audit
+        run: |
+          cargo install cargo-audit --locked 2>/dev/null || true
+
+      - name: Security audit — known vulnerabilities
+        run: cargo audit

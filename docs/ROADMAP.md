@@ -218,7 +218,7 @@ Add gitleaks step to `.github/workflows/security.yml`:
 
 File 2: `rust-toolchain.toml`
   [toolchain]
-  channel = "1.92.0"
+  channel = "1.88.0"
   components = ["rustfmt", "clippy", "rust-src"]
   targets = ["x86_64-unknown-linux-musl"]
 
@@ -2914,7 +2914,7 @@ Create complete containerized deployment infrastructure.
 
 File 1: Dockerfile
   # Stage 1: Builder — statically linked binary
-  FROM rust:1.92.0 AS builder
+  FROM rust:1.88.0 AS builder
   RUN apt-get update && apt-get install -y musl-tools musl-dev
   RUN rustup target add x86_64-unknown-linux-musl
   WORKDIR /app

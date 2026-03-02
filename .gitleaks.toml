@@ -1,0 +1,72 @@
+title = "arbx gitleaks config"
+
+# ─── Ethereum private key ────────────────────────────────────────────────────
+# Matches any 0x-prefixed 64-hex-character string (256-bit private key).
+[[rules]]
+id          = "ethereum-private-key"
+description = "Ethereum private key"
+regex       = '''0x[0-9a-fA-F]{64}'''
+tags        = ["key", "ethereum"]
+
+  [rules.allowlist]
+  # These files deliberately contain placeholder / example private keys.
+  paths = [
+    ".env.example",
+    "docs/ROADMAP.md",
+    "docs/SSOT.md",
+    "ROADMAP.md",
+    "SSOT.md",
+    "docs/",
+  ]
+
+# ─── Alchemy / QuickNode API keys ────────────────────────────────────────────
+# Matches the alphanumeric slug that appears after /v2/ in RPC URLs.
+[[rules]]
+id          = "alchemy-api-key"
+description = "Alchemy or QuickNode API key (URL slug)"
+regex       = '''[a-zA-Z0-9_-]{32,}'''
+tags        = ["key", "alchemy"]
+
+  [rules.allowlist]
+  # Allow long hex strings that are well-known public contract addresses or
+  # zero-value placeholder keys in documented files.
+  paths = [
+    ".env.example",
+    "docs/ROADMAP.md",
+    "docs/SSOT.md",
+    "ROADMAP.md",
+    "SSOT.md",
+    "docs/",
+  ]
+  # Gitleaks stopwords: if the line contains one of these, do not fire.
+  regexes = [
+    # Zero-value private key used in CI/docs as a safe placeholder.
+    '''0x0{64}''',
+    # Hardhat/Anvil well-known test key — never holds real funds.
+    '''0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80''',
+  ]
+
+# ─── Arbiscan API key ─────────────────────────────────────────────────────────
+[[rules]]
+id          = "arbiscan-api-key"
+description = "Arbiscan API key"
+regex       = '''ARBISCAN_API_KEY\s*=\s*[A-Z0-9]{34}'''
+tags        = ["key", "arbiscan"]
+
+  [rules.allowlist]
+  paths = [".env.example", "docs/ROADMAP.md", "ROADMAP.md", "docs/"]
+
+# ─── Global allowlist ─────────────────────────────────────────────────────────
+# Applied to every rule above in addition to per-rule allowlists.
+[allowlist]
+description = "Global allowlist — known-safe paths and patterns"
+paths = [
+  ".env.example",
+  ".gitleaks.toml",
+  "docs/ROADMAP.md",
+  "docs/SSOT.md",
+  "ROADMAP.md",
+  "SSOT.md",
+  "SECURITY.md",
+  "docs/",
+]

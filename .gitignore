@@ -1,12 +1,53 @@
+# ─── Rust build artefacts ───────────────────────────────────────────────────
 /target
+**/*.rs.bk
+Cargo.lock.bak
+
+# ─── Foundry / Solidity ─────────────────────────────────────────────────────
 /contracts/out
 /contracts/cache
 /contracts/lib
+/contracts/broadcast
+broadcast/
+
+# ─── Secrets & environment files ────────────────────────────────────────────
 *.env
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+keystore/
+
+# ─── Logs ───────────────────────────────────────────────────────────────────
 logs/
+*.log
+
+# ─── Profiling ──────────────────────────────────────────────────────────────
 flamegraph.svg
 perf.data
-*.log
+perf.data.old
+*.profdata
+*.profraw
+
+# ─── Editor & OS ────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# ─── Temporary / misc ───────────────────────────────────────────────────────
+tmp/
+scratch/
+*.bak
+*.orig

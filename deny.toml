@@ -1,0 +1,51 @@
+# cargo-deny configuration for arbx
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+# ─── License compliance ─────────────────────────────────────────────────────
+[licenses]
+# Only permit these SPDX identifiers. Any crate with an unlisted license
+# will cause `cargo deny check` to fail.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Zlib",
+]
+# Deny unlicensed crates outright.
+unlicensed = "deny"
+# Warn when a license is not explicitly listed above (covers edge cases).
+copyleft = "warn"
+# Allow private crates to have no license field.
+private = { ignore = true }
+
+# ─── Dependency bans ────────────────────────────────────────────────────────
+[bans]
+# Warn on multiple versions of the same crate — we want a lean dependency tree.
+multiple-versions = "warn"
+# Deny wildcard dependencies (e.g. dep = "*").
+wildcards = "deny"
+# Highlight dependency tree when a duplicate is found.
+highlight = "all"
+
+# ─── Security advisories ────────────────────────────────────────────────────
+[advisories]
+# Deny any crate with a known security vulnerability in the RustSec DB.
+vulnerability = "deny"
+# Warn on unmaintained crates so we can evaluate replacements.
+unmaintained = "warn"
+# Deny yanked crate versions.
+yanked = "deny"
+# Warn on crates with unsound API notices.
+unsound = "warn"
+
+# ─── Source verification ────────────────────────────────────────────────────
+[sources]
+# Only allow crates from crates.io and this repository.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
