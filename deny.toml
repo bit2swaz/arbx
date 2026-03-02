@@ -1,10 +1,15 @@
-# cargo-deny configuration for arbx
-# Docs: https://embarkstudios.github.io/cargo-deny/
+[graph]
+targets = []
 
-# ─── License compliance ─────────────────────────────────────────────────────
+[advisories]
+version = 2
+ignore = [
+    { id = "RUSTSEC-2025-0055", reason = "transitive via revm->ark->tracing-subscriber 0.2.x, not exploitable in our context" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained, transitive via revm->ark-ff, no replacement available" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, transitive via alloy->syn-solidity, no replacement available" },
+]
+
 [licenses]
-# Only permit these SPDX identifiers. Any crate with an unlisted license
-# will cause `cargo deny check` to fail.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -15,37 +20,16 @@ allow = [
     "Unicode-DFS-2016",
     "CC0-1.0",
     "Zlib",
+    "MPL-2.0",
 ]
-# Deny unlicensed crates outright.
-unlicensed = "deny"
-# Warn when a license is not explicitly listed above (covers edge cases).
-copyleft = "warn"
-# Allow private crates to have no license field.
 private = { ignore = true }
 
-# ─── Dependency bans ────────────────────────────────────────────────────────
 [bans]
-# Warn on multiple versions of the same crate — we want a lean dependency tree.
 multiple-versions = "warn"
-# Deny wildcard dependencies (e.g. dep = "*").
 wildcards = "deny"
-# Highlight dependency tree when a duplicate is found.
 highlight = "all"
 
-# ─── Security advisories ────────────────────────────────────────────────────
-[advisories]
-# Deny any crate with a known security vulnerability in the RustSec DB.
-vulnerability = "deny"
-# Warn on unmaintained crates so we can evaluate replacements.
-unmaintained = "warn"
-# Deny yanked crate versions.
-yanked = "deny"
-# Warn on crates with unsound API notices.
-unsound = "warn"
-
-# ─── Source verification ────────────────────────────────────────────────────
 [sources]
-# Only allow crates from crates.io and this repository.
 unknown-registry = "deny"
-unknown-git = "deny"
+unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+    # tracing-subscriber 0.2.x ANSI escape — transitive via revm, not fixable
+    "RUSTSEC-2025-0055",
+]
