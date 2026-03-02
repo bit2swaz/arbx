@@ -1,12 +1,13 @@
 [graph]
 targets = []
+exclude = []
 
 [advisories]
 version = 2
 ignore = [
-    { id = "RUSTSEC-2025-0055", reason = "transitive via revm->ark->tracing-subscriber 0.2.x, not exploitable in our context" },
-    { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained, transitive via revm->ark-ff, no replacement available" },
-    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, transitive via alloy->syn-solidity, no replacement available" },
+    { id = "RUSTSEC-2025-0055", reason = "transitive via revm->ark->tracing-subscriber 0.2.x" },
+    { id = "RUSTSEC-2024-0388", reason = "derivative unmaintained, transitive via revm->ark-ff" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained, transitive via alloy->syn-solidity" },
 ]
 
 [licenses]
@@ -18,11 +19,15 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
     "CC0-1.0",
     "Zlib",
     "MPL-2.0",
+    "EUPL-1.2",
+    "OpenSSL",
 ]
 private = { ignore = true }
+unused-allowed-license = "allow"
 
 [bans]
 multiple-versions = "warn"

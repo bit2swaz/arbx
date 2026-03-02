@@ -51,6 +51,7 @@ jobs:
         with:
           command: check
           arguments: --all-features
+          manifest-path: ./crates/common/Cargo.toml
 
   secrets:
     name: Gitleaks — Secret Scanning
