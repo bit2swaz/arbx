@@ -49,9 +49,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check
+          command: check licenses bans sources
           arguments: --all-features
-          manifest-path: ./crates/common/Cargo.toml
 
   secrets:
     name: Gitleaks — Secret Scanning
