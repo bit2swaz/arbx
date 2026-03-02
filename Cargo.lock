@@ -834,6 +834,7 @@ dependencies = [
 name = "arbx-common"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "anyhow",
  "prometheus",
  "proptest",
