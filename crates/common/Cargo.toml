@@ -5,15 +5,16 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-alloy       = { workspace = true }
-serde       = { workspace = true }
-serde_json  = { workspace = true }
-toml        = { workspace = true }
-anyhow      = { workspace = true }
-thiserror   = { workspace = true }
-tracing     = { workspace = true }
-prometheus  = { workspace = true }
+alloy              = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+toml               = { workspace = true }
+anyhow             = { workspace = true }
+thiserror          = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+prometheus         = { workspace = true }
+tokio              = { workspace = true }   # for Metrics::start_server (async TCP listener)
 
 [dev-dependencies]
-tokio       = { workspace = true }
 proptest    = { workspace = true }
