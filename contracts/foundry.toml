@@ -1,0 +1,26 @@
+[profile.default]
+src            = "src"
+test           = "test"
+script         = "script"
+out            = "out"
+libs           = ["lib"]
+solc           = "0.8.24"
+optimizer      = true
+optimizer_runs = 200
+via_ir         = false
+
+# Explicit remappings so forge resolves forge-std regardless of submodule state.
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+]
+
+[profile.ci]
+fuzz      = { runs = 1000 }
+invariant = { runs = 256 }
+
+[rpc_endpoints]
+arbitrum         = "${ARBITRUM_RPC_URL}"
+arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
+
+[etherscan]
+arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
