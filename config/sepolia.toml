@@ -1,5 +1,6 @@
-# Arbitrum Sepolia testnet overrides — layered on top of default.toml
-# chain_id 421614 = Arbitrum Sepolia
+# Arbitrum Sepolia testnet config.
+# Chain ID 421614 = Arbitrum Sepolia.
+# All fields not listed here are identical to config/default.toml.
 
 [network]
 rpc_url            = "${ARBITRUM_SEPOLIA_RPC_URL}"
@@ -7,26 +8,27 @@ sequencer_feed_url = "wss://sepolia-rollup.arbitrum.io/feed"
 chain_id           = 421614
 
 [strategy]
-min_profit_floor_usd  = 0.01   # Lower floor on testnet — no real capital at risk
-gas_buffer_multiplier = 1.5    # Higher buffer to account for testnet gas variability
-max_gas_gwei          = 10.0   # Testnet gas prices are spiky and irrelevant
+# Lower profit floor on testnet — no real capital at risk.
+min_profit_floor_usd  = 0.01
+gas_buffer_multiplier = 1.1
+# Higher than mainnet (0.1) — testnet gas prices fluctuate unpredictably.
+max_gas_gwei          = 1.0
 flash_loan_fee_bps    = 0
 
 [pools]
-# Balancer V2 is not deployed on Arbitrum Sepolia; use placeholder for testing
-balancer_vault     = "0x0000000000000000000000000000000000000000"
-uniswap_v3_factory = "0x0000000000000000000000000000000000000000"
-camelot_factory    = "0x0000000000000000000000000000000000000000"
-sushiswap_factory  = "0x0000000000000000000000000000000000000000"
-traderjoe_factory  = "0x0000000000000000000000000000000000000000"
+balancer_vault     = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+uniswap_v3_factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+camelot_factory    = "0x6EcCab422D763aC031210895C81787E87B43A652"
+sushiswap_factory  = "0xc35DADB65012eC5796536bD9864eD8773aBc74C4"
+traderjoe_factory  = "0x9Ad6C38BE94206cA50bb0d90783181662f0CfA10"
 
 [execution]
 contract_address           = "${ARB_EXECUTOR_ADDRESS}"
 private_key                = "${PRIVATE_KEY}"
-max_concurrent_simulations = 4    # Fewer workers on testnet
-gas_estimate_buffer        = 1.5
+max_concurrent_simulations = 10
+gas_estimate_buffer        = 1.2
 node_interface_address     = "0x00000000000000000000000000000000000000C8"
 
 [observability]
-log_level    = "debug"   # Verbose on testnet for easier debugging
+log_level    = "info"
 metrics_port = 9090
