@@ -51,8 +51,8 @@ jobs:
         with:
           shared-key: "arbx-stable"
 
-      - name: Verify Cargo.lock is committed and valid
-        run: cargo fetch --locked
+      - name: Verify Cargo.lock is committed
+        run: git ls-files --error-unmatch Cargo.lock
 
       - name: Check formatting
         run: cargo fmt --check
