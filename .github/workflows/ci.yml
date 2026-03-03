@@ -51,8 +51,8 @@ jobs:
         with:
           shared-key: "arbx-stable"
 
-      - name: Verify Cargo.lock is up to date
-        run: cargo update --locked
+      - name: Verify Cargo.lock is committed and valid
+        run: cargo fetch --locked
 
       - name: Check formatting
         run: cargo fmt --check
