@@ -9,6 +9,13 @@ optimizer      = true
 optimizer_runs = 200
 via_ir         = false
 
+# Allow Deploy.s.sol to write deployments/<chainid>.json and Verify.s.sol to
+# read them back.  Path is relative to this foundry.toml (contracts/).
+fs_permissions = [{ access = "read-write", path = "./" }]
+
+# Required by Verify.s.sol which shells out to `forge verify-contract`.
+ffi = true
+
 # Explicit remappings so forge resolves forge-std regardless of submodule state.
 remappings = [
     "forge-std/=lib/forge-std/src/",
@@ -23,4 +30,5 @@ arbitrum         = "${ARBITRUM_RPC_URL}"
 arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
 
 [etherscan]
-arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
+arbitrum         = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
+arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }
