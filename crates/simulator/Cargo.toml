@@ -10,6 +10,7 @@ revm         = { workspace = true }
 alloy        = { workspace = true }
 tracing      = { workspace = true }
 anyhow       = { workspace = true }
+tokio        = { workspace = true }
 
 [dev-dependencies]
 tokio    = { workspace = true }
