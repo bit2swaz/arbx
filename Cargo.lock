@@ -906,9 +906,11 @@ dependencies = [
  "anyhow",
  "arbx-common",
  "arbx-ingestion",
+ "async-trait",
  "mockall",
  "proptest",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
