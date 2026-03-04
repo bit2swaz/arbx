@@ -22,7 +22,7 @@ tokio            = { version = "1",    features = ["full"] }
 # Ethereum interaction
 alloy            = { version = "1",    features = ["full"] }
 # EVM simulation
-revm             = { version = "34", features = ["alloydb"] }
+revm             = { version = "34", features = ["alloydb", "optional_balance_check", "optional_no_base_fee"] }
 # Concurrency
 dashmap          = "6"
 # Serialisation

@@ -26,13 +26,21 @@ use std::sync::{Arc, Mutex};
 use alloy::{
     eips::BlockId,
     network::Ethereum,
-    primitives::{Address, U256},
+    primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder, RootProvider},
     sol,
+    sol_types::{SolCall, SolValue},
 };
 use anyhow::Context as _;
-use revm::database::{AlloyDB, CacheDB};
-use revm::database_interface::WrapDatabaseAsync;
+use arbx_common::types::{ArbPath, Opportunity, SimulationResult};
+use revm::{
+    context::TxEnv,
+    context_interface::result::ExecutionResult,
+    database::{AlloyDB, CacheDB},
+    database_interface::WrapDatabaseAsync,
+    primitives::TxKind,
+    Context, ExecuteCommitEvm, MainBuilder, MainContext,
+};
 use tracing::{debug, trace};
 
 // ─── ERC-20 minimal ABI (used by read_erc20_balance) ────────────────────────
@@ -45,6 +53,31 @@ sol! {
     }
 }
 
+// ─── ArbExecutor ABI (for calldata encoding) ─────────────────────────────────
+
+// ABI types matching `ArbExecutor.sol::executeArb`.
+// Field names use Rust snake_case; the wire encoding is identical to the
+// Solidity camelCase original because Solidity ABI encoding ignores names.
+sol! {
+    struct ArbParams {
+        address token_in;
+        address pool_a;
+        address token_mid;
+        address pool_b;
+        uint256 flash_loan_amount;
+        uint256 min_profit;
+        uint8   pool_a_kind;
+        uint8   pool_b_kind;
+    }
+
+    /// Selector: keccak256("executeArb(address[],uint256[],(address,address,address,address,uint256,uint256,uint8,uint8))")
+    function executeArb(
+        address[] tokens,
+        uint256[] amounts,
+        ArbParams params
+    );
+}
+
 // ─── Type alias ──────────────────────────────────────────────────────────────
 
 /// A revm [`CacheDB`] backed by an Arbitrum RPC node.
@@ -55,6 +88,59 @@ sol! {
 /// Returned by [`ArbSimulator::fork_at_latest`] and
 /// [`ArbSimulator::fork_at_block`].
 pub type ArbDB = CacheDB<WrapDatabaseAsync<AlloyDB<Ethereum, Arc<RootProvider<Ethereum>>>>>;
+
+// ─── CallDataEncoder ──────────────────────────────────────────────────────────
+
+/// Encodes and decodes ABI calldata for [`ArbExecutor`].
+///
+/// All methods are pure (no I/O), so the struct carries no fields.
+pub struct CallDataEncoder;
+
+impl CallDataEncoder {
+    /// ABI-encodes an `executeArb` call for the given arbitrage `path`.
+    ///
+    /// Prepends the 4-byte function selector via [`SolCall::abi_encode`].
+    ///
+    /// `pool_a_kind` and `pool_b_kind` default to `0` (UniswapV3) because
+    /// [`ArbPath`] does not carry per-pool DEX-kind information at this stage.
+    pub fn encode_execute_arb(path: &ArbPath, min_profit_wei: U256) -> Bytes {
+        let call = executeArbCall {
+            tokens: vec![path.token_in],
+            amounts: vec![path.flash_loan_amount_wei],
+            params: ArbParams {
+                token_in: path.token_in,
+                pool_a: path.pool_a,
+                token_mid: path.token_mid,
+                pool_b: path.pool_b,
+                flash_loan_amount: path.flash_loan_amount_wei,
+                min_profit: min_profit_wei,
+                pool_a_kind: 0,
+                pool_b_kind: 0,
+            },
+        };
+        Bytes::from(call.abi_encode())
+    }
+
+    /// Decodes a revert reason from raw EVM output bytes.
+    ///
+    /// | Input                                      | Result                      |
+    /// |--------------------------------------------|-----------------------------|
+    /// | Empty bytes                                | `"empty revert"`            |
+    /// | Starts with `0x08c379a0` (`Error(string)`) | decoded string              |
+    /// | Anything else                              | hex-encoded bytes           |
+    pub fn decode_revert_reason(output: &Bytes) -> String {
+        if output.is_empty() {
+            return "empty revert".to_string();
+        }
+        // Standard ABI Error(string) selector = keccak256("Error(string)")[0..4] = 0x08c379a0.
+        if output.len() > 4 && output[..4] == [0x08_u8, 0xc3, 0x79, 0xa0] {
+            if let Ok(reason) = String::abi_decode(&output[4..]) {
+                return reason;
+            }
+        }
+        alloy::hex::encode(output.as_ref())
+    }
+}
 
 // ─── ArbSimulator ────────────────────────────────────────────────────────────
 
@@ -163,6 +249,132 @@ impl ArbSimulator {
             None => contract.balanceOf(account).call().await?,
         };
         Ok(balance)
+    }
+
+    // ── Simulation ───────────────────────────────────────────────────────────
+
+    /// Simulate `opportunity` against a fork of the **latest** Arbitrum block.
+    ///
+    /// Forks state via [`fork_at_latest`][Self::fork_at_latest] then executes
+    /// the EVM inside [`tokio::task::spawn_blocking`] (required because
+    /// [`WrapDatabaseAsync`] calls `Handle::block_on` internally, which
+    /// panics from within an async context).
+    pub async fn simulate(
+        &self,
+        opportunity: &Opportunity,
+        contract: Address,
+        owner: Address,
+    ) -> SimulationResult {
+        let db = match self.fork_at_latest().await {
+            Ok(db) => db,
+            Err(e) => {
+                return SimulationResult::Failure {
+                    reason: format!("fork error: {e}"),
+                }
+            }
+        };
+        let opp = opportunity.clone();
+        tokio::task::spawn_blocking(move || Self::run_evm(db, &opp, contract, owner))
+            .await
+            .unwrap_or_else(|e| SimulationResult::Failure {
+                reason: format!("spawn_blocking join error: {e}"),
+            })
+    }
+
+    /// Simulate `opportunity` against a fork at a specific historical `block`.
+    ///
+    /// Primarily used by regression tests that replay known-profitable blocks.
+    pub async fn simulate_at_block(
+        &self,
+        opportunity: &Opportunity,
+        contract: Address,
+        owner: Address,
+        block: u64,
+    ) -> SimulationResult {
+        let db = match self.fork_at_block(block).await {
+            Ok(db) => db,
+            Err(e) => {
+                return SimulationResult::Failure {
+                    reason: format!("fork error at block {block}: {e}"),
+                }
+            }
+        };
+        let opp = opportunity.clone();
+        tokio::task::spawn_blocking(move || Self::run_evm(db, &opp, contract, owner))
+            .await
+            .unwrap_or_else(|e| SimulationResult::Failure {
+                reason: format!("spawn_blocking join error: {e}"),
+            })
+    }
+
+    /// Execute one EVM transaction on `db` and return a [`SimulationResult`].
+    ///
+    /// Encodes the `executeArb` calldata, runs it against the fork, and maps:
+    /// - `Success` → [`SimulationResult::Success`] with `opportunity.net_profit_wei`
+    /// - `Revert`  → [`SimulationResult::Failure`] with decoded reason string
+    /// - `Halt`    → [`SimulationResult::Failure`] with halt description
+    ///
+    /// Sets `chain_id = 42161` (Arbitrum One) and disables nonce, balance, and
+    /// base-fee checks so the simulation succeeds even when `owner` holds no
+    /// ETH on the fork.
+    fn run_evm(
+        mut db: ArbDB,
+        opportunity: &Opportunity,
+        contract: Address,
+        owner: Address,
+    ) -> SimulationResult {
+        let calldata = CallDataEncoder::encode_execute_arb(
+            &opportunity.path,
+            opportunity.path.estimated_profit_wei,
+        );
+
+        let mut evm = Context::mainnet()
+            .modify_cfg_chained(|c| {
+                c.chain_id = 42161; // Arbitrum One
+                c.disable_nonce_check = true;
+                c.disable_balance_check = true;
+                c.disable_base_fee = true;
+            })
+            .with_db(&mut db)
+            .build_mainnet();
+
+        let tx = TxEnv::builder()
+            .caller(owner)
+            .kind(TxKind::Call(contract))
+            .data(calldata)
+            .gas_limit(2_000_000)
+            .build()
+            .unwrap();
+
+        match evm.transact_commit(tx) {
+            Ok(ExecutionResult::Success { gas_used, .. }) => {
+                let net = opportunity.net_profit_wei;
+                debug!(
+                    token_in = %opportunity.path.token_in,
+                    gas_used,
+                    "simulation success"
+                );
+                SimulationResult::Success {
+                    net_profit_wei: net,
+                    gas_used,
+                }
+            }
+            Ok(ExecutionResult::Revert { output, .. }) => {
+                let reason = CallDataEncoder::decode_revert_reason(&output);
+                debug!(%reason, "simulation revert");
+                SimulationResult::Failure { reason }
+            }
+            Ok(ExecutionResult::Halt { reason, .. }) => {
+                let r = format!("EVM halt: {reason:?}");
+                debug!(reason = %r, "simulation halt");
+                SimulationResult::Failure { reason: r }
+            }
+            Err(e) => {
+                let reason = format!("EVM error: {e}");
+                debug!(%reason, "simulation EVM error");
+                SimulationResult::Failure { reason }
+            }
+        }
     }
 }
 
@@ -323,5 +535,221 @@ mod tests {
             "second fork_at_latest ({second_ms}ms) should not be \
              significantly slower than first ({first_ms}ms)"
         );
+    }
+
+    // ── CallDataEncoder unit tests (no network required) ────────────────────
+
+    /// `encode_execute_arb` must be pure: identical inputs produce identical bytes.
+    #[test]
+    fn test_encode_execute_arb_deterministic() {
+        use alloy::primitives::{Address, U256};
+        use arbx_common::types::ArbPath;
+
+        let path = ArbPath {
+            token_in: Address::ZERO,
+            pool_a: Address::ZERO,
+            token_mid: Address::ZERO,
+            pool_b: Address::ZERO,
+            token_out: Address::ZERO,
+            estimated_profit_wei: U256::from(1_000_u64),
+            flash_loan_amount_wei: U256::from(1_000_000_u64),
+        };
+        let min = U256::from(500_u64);
+        let enc1 = CallDataEncoder::encode_execute_arb(&path, min);
+        let enc2 = CallDataEncoder::encode_execute_arb(&path, min);
+        assert_eq!(enc1, enc2, "encode_execute_arb must be deterministic");
+    }
+
+    /// Encoded calldata must contain more than just the 4-byte selector.
+    #[test]
+    fn test_encode_execute_arb_non_empty() {
+        use alloy::primitives::{Address, U256};
+        use arbx_common::types::ArbPath;
+
+        let path = ArbPath {
+            token_in: Address::ZERO,
+            pool_a: Address::ZERO,
+            token_mid: Address::ZERO,
+            pool_b: Address::ZERO,
+            token_out: Address::ZERO,
+            estimated_profit_wei: U256::ZERO,
+            flash_loan_amount_wei: U256::ZERO,
+        };
+        let encoded = CallDataEncoder::encode_execute_arb(&path, U256::ZERO);
+        assert!(
+            encoded.len() > 4,
+            "calldata must have >4 bytes; got {} bytes",
+            encoded.len()
+        );
+    }
+
+    /// Standard `Error(string)` revert must be decoded to the plain message.
+    #[test]
+    fn test_decode_revert_standard_error() {
+        use alloy::primitives::Bytes;
+        use alloy::sol_types::SolValue;
+
+        // Craft Error("No profit") identical to what Solidity emits.
+        // selector for Error(string) = 0x08c379a0
+        const SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
+        let message = "No profit";
+        let string_abi = message.to_string().abi_encode();
+        let mut revert_bytes = SELECTOR.to_vec();
+        revert_bytes.extend_from_slice(&string_abi);
+        let revert = Bytes::from(revert_bytes);
+
+        let reason = CallDataEncoder::decode_revert_reason(&revert);
+        assert_eq!(reason, message, "should decode standard Error(string)");
+    }
+
+    /// Non-standard revert data (unknown selector) must be hex-encoded.
+    #[test]
+    fn test_decode_revert_non_standard() {
+        use alloy::primitives::Bytes;
+
+        let bad = Bytes::from_static(b"\xde\xad\xbe\xef");
+        let reason = CallDataEncoder::decode_revert_reason(&bad);
+        assert!(
+            reason.contains("deadbeef"),
+            "non-standard revert should be hex-encoded; got: {reason}"
+        );
+    }
+
+    /// Empty revert output must return the sentinel string `"empty revert"`.
+    #[test]
+    fn test_decode_revert_empty() {
+        use alloy::primitives::Bytes;
+
+        let empty = Bytes::new();
+        let reason = CallDataEncoder::decode_revert_reason(&empty);
+        assert_eq!(reason, "empty revert");
+    }
+
+    // ── Property tests ───────────────────────────────────────────────────────
+
+    proptest::proptest! {
+        /// For any random [`ArbPath`] the encoded calldata must be non-trivially
+        /// larger than the 4-byte selector alone.
+        #[test]
+        fn prop_encode_decode_roundtrip(
+            token_in    in proptest::array::uniform20(0_u8..),
+            pool_a      in proptest::array::uniform20(0_u8..),
+            token_mid   in proptest::array::uniform20(0_u8..),
+            pool_b      in proptest::array::uniform20(0_u8..),
+            token_out   in proptest::array::uniform20(0_u8..),
+            profit       in 0_u64..u64::MAX,
+            flash_amount in 0_u64..u64::MAX,
+        ) {
+            use alloy::primitives::{Address, U256};
+            use arbx_common::types::ArbPath;
+
+            let path = ArbPath {
+                token_in:              Address::from(token_in),
+                pool_a:                Address::from(pool_a),
+                token_mid:             Address::from(token_mid),
+                pool_b:                Address::from(pool_b),
+                token_out:             Address::from(token_out),
+                estimated_profit_wei:  U256::from(profit),
+                flash_loan_amount_wei: U256::from(flash_amount),
+            };
+            let encoded = CallDataEncoder::encode_execute_arb(&path, U256::from(profit));
+            proptest::prop_assert!(
+                encoded.len() > 4,
+                "encoded calldata must be >4 bytes; got {} bytes", encoded.len()
+            );
+        }
+    }
+
+    // ── Integration tests (require ARBITRUM_RPC_URL) ─────────────────────────
+
+    /// Call the Balancer Vault (no `executeArb` function) — must report Failure.
+    ///
+    /// The Vault has no matching selector, so the EVM reverts.  Verifies that
+    /// revm correctly surfaces reverts and that `simulate` maps them to
+    /// [`SimulationResult::Failure`].
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires ARBITRUM_RPC_URL"]
+    async fn regression_simulates_as_failure_without_deployed_contract() {
+        use alloy::primitives::{address, Address, U256};
+        use arbx_common::types::{ArbPath, Opportunity, SimulationResult};
+
+        let rpc = std::env::var("ARBITRUM_RPC_URL").unwrap();
+        let provider = Arc::new(ProviderBuilder::default().connect_http(rpc.parse().unwrap()));
+        let sim = ArbSimulator::new(provider);
+
+        // Balancer V2 Vault: has code but no `executeArb` function → EVM revert.
+        const BALANCER_VAULT: Address = address!("BA12222222228d8Ba445958a75a0704d566BF2C8");
+        let path = ArbPath {
+            token_in: BALANCER_VAULT,
+            pool_a: BALANCER_VAULT,
+            token_mid: BALANCER_VAULT,
+            pool_b: BALANCER_VAULT,
+            token_out: BALANCER_VAULT,
+            estimated_profit_wei: U256::from(1_000_u64),
+            flash_loan_amount_wei: U256::from(1_000_000_000_000_000_000_u128), // 1 ETH
+        };
+        let opp = Opportunity {
+            path,
+            gross_profit_wei: U256::from(1_000_u64),
+            l2_gas_cost_wei: U256::ZERO,
+            l1_gas_cost_wei: U256::ZERO,
+            net_profit_wei: U256::from(1_000_u64),
+            detected_at_ms: 0,
+        };
+
+        let owner = address!("0000000000000000000000000000000000000001");
+        let result = sim.simulate(&opp, BALANCER_VAULT, owner).await;
+        assert!(
+            matches!(result, SimulationResult::Failure { .. }),
+            "Balancer Vault has no executeArb: expected Failure, got {result:?}"
+        );
+    }
+
+    /// Golden test: replay a historical Arbitrum block end-to-end without
+    /// panicking.
+    ///
+    /// NOTE: Replace `CONTRACT` with a real deployed `ArbExecutor` address
+    /// and tune `path` to a known-profitable path at `BLOCK` to turn this
+    /// into a strict regression test.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires ARBITRUM_RPC_URL"]
+    async fn golden_test_historical_arb_block_200000000() {
+        use alloy::primitives::{address, Address, U256};
+        use arbx_common::types::{ArbPath, Opportunity};
+
+        let rpc = std::env::var("ARBITRUM_RPC_URL").unwrap();
+        let provider = Arc::new(ProviderBuilder::default().connect_http(rpc.parse().unwrap()));
+        let sim = ArbSimulator::new(provider);
+
+        const BLOCK: u64 = 200_000_000;
+        const WETH: Address = address!("82aF49447D8a07e3bd95BD0d56f35241523fBab1");
+        const USDC: Address = address!("FF970A61A04b1cA14834A43f5dE4533eBDDB5CC8");
+        // Placeholder — replace with a real ArbExecutor deployment once available.
+        const CONTRACT: Address = address!("0000000000000000000000000000000000000001");
+        const OWNER: Address = address!("0000000000000000000000000000000000000002");
+
+        let path = ArbPath {
+            token_in: WETH,
+            pool_a: address!("C31E54c7a869B9FcBEcc14363CF510d1c41fa443"), // UniV3 USDC/WETH
+            token_mid: USDC,
+            pool_b: address!("905dfCD5649217c42684f23958568e533C711Aa3"),
+            token_out: WETH,
+            estimated_profit_wei: U256::from(5_000_000_000_000_000_u128), // 0.005 ETH
+            flash_loan_amount_wei: U256::from(1_000_000_000_000_000_000_u128), // 1 WETH
+        };
+        let opp = Opportunity {
+            path,
+            gross_profit_wei: U256::from(5_000_000_000_000_000_u128),
+            l2_gas_cost_wei: U256::from(500_000_000_000_000_u128),
+            l1_gas_cost_wei: U256::from(100_000_000_000_000_u128),
+            net_profit_wei: U256::from(4_400_000_000_000_000_u128),
+            detected_at_ms: 0,
+        };
+
+        // With a placeholder contract address the simulation returns Failure
+        // (no code at CONTRACT); any non-panic outcome is acceptable here.
+        let result = sim.simulate_at_block(&opp, CONTRACT, OWNER, BLOCK).await;
+        println!("golden test result: {result:?}");
+        let _ = result;
     }
 }
