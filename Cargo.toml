@@ -46,6 +46,8 @@ proptest         = "1"
 tokio-test       = "0.4"
 # Mock generation
 mockall          = "0.14"
+# Arbitrum sequencer feed client
+sequencer_client = "0.5"
 
 # ─── workspace crates ────────────────────────────────────────────────────────
 arbx-common    = { path = "crates/common" }

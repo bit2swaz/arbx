@@ -13,6 +13,7 @@ tracing           = { workspace = true }
 anyhow            = { workspace = true }
 futures-util      = { workspace = true }
 tokio-tungstenite = { workspace = true }
+sequencer_client  = { workspace = true }
 
 [dev-dependencies]
 tokio      = { workspace = true }
