@@ -930,6 +930,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "arbx-common",
+ "async-trait",
  "dashmap",
  "futures-util",
  "mockall",

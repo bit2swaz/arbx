@@ -48,6 +48,8 @@ tokio-test       = "0.4"
 mockall          = "0.14"
 # Arbitrum sequencer feed client
 sequencer_client = "0.5"
+# Async trait support
+async-trait      = "0.1"
 
 # ─── workspace crates ────────────────────────────────────────────────────────
 arbx-common    = { path = "crates/common" }
