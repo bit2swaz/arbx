@@ -5,11 +5,12 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-arbx-common = { workspace = true }
-alloy        = { workspace = true }
-tracing      = { workspace = true }
-anyhow       = { workspace = true }
-thiserror    = { workspace = true }
+arbx-common    = { workspace = true }
+arbx-ingestion = { workspace = true }
+alloy          = { workspace = true }
+tracing        = { workspace = true }
+anyhow         = { workspace = true }
+thiserror      = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

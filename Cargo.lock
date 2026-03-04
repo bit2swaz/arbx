@@ -905,6 +905,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "arbx-common",
+ "arbx-ingestion",
  "mockall",
  "proptest",
  "thiserror 2.0.18",
