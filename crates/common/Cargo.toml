@@ -18,3 +18,4 @@ tokio              = { workspace = true }   # for Metrics::start_server (async T
 
 [dev-dependencies]
 proptest    = { workspace = true }
+tempfile    = "3"
