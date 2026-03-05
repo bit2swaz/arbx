@@ -27,7 +27,9 @@ gas_estimate_buffer        = 1.2   # simulation_gas * 1.2 for on-chain submissio
 # Arbitrum 2D gas model
 # Always query NodeInterface for true total gas cost before submitting.
 # eth_estimateGas alone only returns L2 execution cost — misses L1 calldata cost.
-node_interface_address = "0x00000000000000000000000000000000000000C8"
+node_interface_address   = "0x00000000000000000000000000000000000000C8"
+l2_gas_units             = 500000  # Baseline L2 execution gas units
+receipt_timeout_secs     = 30      # Seconds to wait for receipt before timing out
 
 [observability]
 log_level    = "info"

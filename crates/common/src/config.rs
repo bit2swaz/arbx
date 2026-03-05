@@ -58,6 +58,20 @@ pub struct ExecutionConfig {
     pub gas_estimate_buffer: f64,
     /// Arbitrum NodeInterface precompile address for L1 calldata gas estimation.
     pub node_interface_address: String,
+    /// Baseline L2 execution gas units used when estimating total gas limit.
+    #[serde(default = "default_l2_gas_units")]
+    pub l2_gas_units: u64,
+    /// Seconds to wait for a transaction receipt before timing out.
+    #[serde(default = "default_receipt_timeout_secs")]
+    pub receipt_timeout_secs: u64,
+}
+
+fn default_l2_gas_units() -> u64 {
+    500_000
+}
+
+fn default_receipt_timeout_secs() -> u64 {
+    30
 }
 
 /// `[observability]` section.

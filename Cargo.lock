@@ -921,6 +921,7 @@ dependencies = [
  "alloy",
  "anyhow",
  "arbx-common",
+ "async-trait",
  "mockall",
  "tokio",
  "tracing",
