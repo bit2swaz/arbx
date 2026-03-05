@@ -4,6 +4,9 @@
 //! These stubs replace the `#[cfg(test)]`-gated mockall mocks that live inside
 //! each crate and are therefore not accessible at workspace integration level.
 
+// Helpers are a shared fixture library; not every item is used by every test.
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use alloy::primitives::{Address, Bytes, TxHash, I256, U256};
