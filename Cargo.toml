@@ -78,3 +78,15 @@ arbx-detector      = { workspace = true }
 arbx-simulator     = { workspace = true }
 arbx-executor      = { workspace = true }
 
+# ─── root-package dev-dependencies (integration tests) ───────────────────────
+[dev-dependencies]
+tokio-test   = { workspace = true }
+mockall      = { workspace = true }
+tempfile     = "3"
+async-trait  = { workspace = true }
+
+# ─── integration test binary ──────────────────────────────────────────────────
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+
