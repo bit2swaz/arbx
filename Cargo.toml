@@ -84,9 +84,16 @@ tokio-test   = { workspace = true }
 mockall      = { workspace = true }
 tempfile     = "3"
 async-trait  = { workspace = true }
+proptest     = { workspace = true }
+serde_json   = { workspace = true }
 
 # ─── integration test binary ──────────────────────────────────────────────────
 [[test]]
 name = "integration"
 path = "tests/integration/mod.rs"
+
+# ─── property test binary ─────────────────────────────────────────────────────
+[[test]]
+name = "property"
+path = "tests/property/mod.rs"
 

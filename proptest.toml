@@ -1,0 +1,6 @@
+# Proptest configuration for arbx property tests.
+#
+# Run 10 000 cases per property to surface rare edge-cases while staying
+# well within CI time budgets (~minutes for pure/synchronous tests).
+[profile.default]
+cases = 10000
