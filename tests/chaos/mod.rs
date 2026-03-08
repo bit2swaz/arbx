@@ -381,12 +381,6 @@ struct FailingFetcher {
 }
 
 impl FailingFetcher {
-    fn instant(message: &'static str) -> Self {
-        Self {
-            delay: None,
-            message,
-        }
-    }
     fn with_delay(delay: Duration, message: &'static str) -> Self {
         Self {
             delay: Some(delay),
