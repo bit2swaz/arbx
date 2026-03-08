@@ -211,9 +211,8 @@ impl<S: TransactionSender> TransactionSubmitter<S> {
         }
     }
 
-    /// Override the receipt-polling timeout — test helper.
-    #[cfg(test)]
-    fn with_receipt_timeout(mut self, timeout: Duration) -> Self {
+    /// Override the receipt-polling timeout — useful in tests outside this crate.
+    pub fn with_receipt_timeout(mut self, timeout: Duration) -> Self {
         self.receipt_timeout = timeout;
         self
     }

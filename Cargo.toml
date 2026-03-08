@@ -84,8 +84,10 @@ tokio-test   = { workspace = true }
 mockall      = { workspace = true }
 tempfile     = "3"
 async-trait  = { workspace = true }
-proptest     = { workspace = true }
-serde_json   = { workspace = true }
+proptest            = { workspace = true }
+serde_json          = { workspace = true }
+tokio-tungstenite   = { workspace = true }
+futures-util        = { workspace = true }
 
 # ─── integration test binary ──────────────────────────────────────────────────
 [[test]]
@@ -96,4 +98,9 @@ path = "tests/integration/mod.rs"
 [[test]]
 name = "property"
 path = "tests/property/mod.rs"
+
+# ─── chaos test binary ────────────────────────────────────────────────────────
+[[test]]
+name = "chaos"
+path = "tests/chaos/mod.rs"
 
