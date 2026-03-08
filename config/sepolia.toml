@@ -8,11 +8,12 @@ sequencer_feed_url = "wss://sepolia-rollup.arbitrum.io/feed"
 chain_id           = 421614
 
 [strategy]
-# Lower profit floor on testnet — no real capital at risk.
-min_profit_floor_usd  = 0.01
-gas_buffer_multiplier = 1.1
-# Higher than mainnet (0.1) — testnet gas prices fluctuate unpredictably.
-max_gas_gwei          = 1.0
+# Testnet: lower profit floor — no real capital at risk.
+# Dynamic threshold still applies: gas * gas_buffer_multiplier + min_profit_floor_usd
+min_profit_floor_usd  = 0.001
+gas_buffer_multiplier = 1.3
+# Higher ceiling than mainnet (0.1) — testnet gas is more volatile.
+max_gas_gwei          = 2.0
 flash_loan_fee_bps    = 0
 
 [pools]
@@ -25,10 +26,15 @@ traderjoe_factory  = "0x9Ad6C38BE94206cA50bb0d90783181662f0CfA10"
 [execution]
 contract_address           = "${ARB_EXECUTOR_ADDRESS}"
 private_key                = "${PRIVATE_KEY}"
-max_concurrent_simulations = 10
+# Reduced concurrency on testnet to stay within free-tier RPC limits.
+max_concurrent_simulations = 3
 gas_estimate_buffer        = 1.2
 node_interface_address     = "0x00000000000000000000000000000000000000C8"
+l2_gas_units               = 500000
+# Longer receipt timeout on Sepolia — block times can be irregular.
+receipt_timeout_secs       = 60
 
 [observability]
-log_level    = "info"
+# debug level on testnet so the full funnel is visible in logs.
+log_level    = "debug"
 metrics_port = 9090

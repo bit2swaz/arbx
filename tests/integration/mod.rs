@@ -6,6 +6,7 @@
 //! accessible here; instead the underlying generic types are wired directly.
 
 mod helpers;
+mod testnet_validation;
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
