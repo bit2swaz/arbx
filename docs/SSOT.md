@@ -12,6 +12,48 @@ fully open source, fully documented.
 
 ---
 
+## Build Status
+
+**Last updated:** 2026-03-08
+
+| Phase | Description | Status | Commit |
+|---|---|---|---|
+| 0.1 | Git, CI, linting baseline | ✅ | — |
+| 0.2 | Secret scanning, dep pinning | ✅ | — |
+| 1.1 | Workspace scaffold | ✅ | — |
+| 1.2 | Shared types + full tests | ✅ | — |
+| 1.3 | Config system + env expansion | ✅ | — |
+| 1.4 | Observability: metrics + tracing | ✅ | — |
+| 2.1 | Foundry project setup | ✅ | — |
+| 2.2 | ArbExecutor.sol implementation | ✅ | — |
+| 2.3 | Contract tests: Arbitrum fork TDD | ✅ | — |
+| 2.4 | Fuzz tests and invariants | ✅ | — |
+| 2.5 | Deploy script | ✅ | — |
+| 3.1 | Pool state store + concurrent tests | ✅ | — |
+| 3.2 | Sequencer feed + reconnection tests | ✅ | — |
+| 3.3 | Block reconciler + staleness tests | ✅ | — |
+| 4.1 | Two-hop path scanner + property tests | ✅ | — |
+| 4.2 | Profit calculator + 2D gas tests | ✅ | — |
+| 5.1 | revm fork infrastructure | ✅ | — |
+| 5.2 | Full arb simulation + regression suite | ✅ | — |
+| 6.1 | Transaction submitter + mock tests | ✅ | — |
+| 6.2 | PnL tracker + persistence tests | ✅ | — |
+| 7.1 | Full pipeline wiring | ✅ | — |
+| 7.2 | Integration test suite | ✅ | — |
+| 8.1 | Comprehensive property test suite | ✅ | — |
+| 8.2 | Chaos tests: feed + RPC fault injection | ✅ | `ab80e6d` |
+| 8.3 | Benchmarking infrastructure | ✅ | `9cd34f2` |
+| 9.1 | Testnet infrastructure + smoke tests | ⬜ | — |
+| 10.1 | Mainnet launch | ⬜ | — |
+
+**Codebase stats (2026-03-08):**
+- Rust: **6,502 lines** across 24 files
+- Solidity: **1,079 lines** across 5 files
+- Tests: **170 passing**, 0 failing, 0 unexpected ignores
+- Benchmarks: **5 hot-path benchmarks** (Criterion 0.5)
+
+---
+
 ## Core Invariants
 These never change regardless of how the system evolves:
 
@@ -543,7 +585,17 @@ metrics_port = 9090
 
 ## Development Phases
 
-### Phase 1 — Correctness (Arbitrum Sepolia Testnet)
+### Phases 0–8 — Complete ✅
+
+All engineering phases through Phase 8.3 (Benchmarking Infrastructure) are complete
+and committed. The full Rust engine — ingestion, detection, simulation, execution,
+property tests, chaos tests, and benchmarks — is built and green.
+
+**Codebase:** 6,502 lines of Rust · 1,079 lines of Solidity · 170 tests passing
+
+---
+
+### Phase 9 — Testnet Validation (Arbitrum Sepolia) ← NEXT
 
 Use **Arbitrum Sepolia** — not Ethereum Sepolia, not Arbitrum Goerli (deprecated).
 Arbitrum Sepolia mirrors mainnet behaviour. No real liquidity to arb, but all
@@ -563,7 +615,7 @@ match expected output. Zero unexplained errors or panics.
 
 ---
 
-### Phase 2 — Mainnet Validation (Arbitrum, micro scale)
+### Phase 10 — Mainnet Validation (Arbitrum, micro scale)
 
 Goals:
 - Deploy contract to Arbitrum mainnet
@@ -587,7 +639,7 @@ positive net PnL, even if small.
 
 ---
 
-### Phase 3 — Optimisation
+### Phase 11 — Optimisation
 
 Goals:
 - Profile hot paths with `cargo-flamegraph`, eliminate bottlenecks
@@ -606,7 +658,7 @@ Frankfurt cuts this to under 5ms.
 
 ---
 
-### Phase 4 — Expansion
+### Phase 12 — Expansion
 
 Goals:
 - Add liquidation detection (Aave V3 on Arbitrum has large positions)

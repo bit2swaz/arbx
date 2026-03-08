@@ -2453,6 +2453,35 @@ Write the complete file. All chaos tests must pass.
 
 ---
 
+## Mini-Phase 8.3 — Benchmarking Infrastructure ✅ COMPLETE
+
+**Commit:** `9cd34f2` — 2026-03-08
+
+**Definition of done:**
+- `benches/hot_paths.rs` exists with exactly 5 Criterion benchmarks
+- `cargo bench --bench hot_paths` runs without errors
+- All 5 benchmarks produce output with mean ± std dev
+- Baseline numbers filled into the comment block after first run
+- `scripts/flamegraph.sh` exists and is executable
+
+**Baseline results (recorded 2026-03-08):**
+
+| Benchmark | Mean | Notes |
+|---|---|---|
+| `path_scan_100_pools` | 467 µs | PathScanner over 100-pool store |
+| `v2_compute/1k–1M` | ~17 ns | O(1) — flat across all input sizes |
+| `profit_threshold` | 21 ns | Pure function, no I/O |
+| `calldata_encode` | 125 ns | ABI encoding via alloy |
+| `pool_state_lookup` | 51 ns | DashMap concurrent read |
+
+**Files created:**
+- `benches/hot_paths.rs` — 5 Criterion benchmarks
+- `scripts/flamegraph.sh` — CPU flamegraph helper (executable)
+- `Cargo.toml` — added `criterion = { version = "0.5", features = ["async_tokio"] }`,
+  `[[bench]] name = "hot_paths" harness = false`, and `[profile.profiling]`
+
+---
+
 ---
 
 # PHASE 9 — Testnet Validation
@@ -3476,15 +3505,15 @@ This is your shot at funding — write it like it matters.
 ## Phase Completion Checklist
 
 ```
-Phase 0  — Project Hygiene        [ ] 0.1 [ ] 0.2
-Phase 1  — Foundation             [ ] 1.1 [ ] 1.2 [ ] 1.3 [ ] 1.4
-Phase 2  — Smart Contract         [ ] 2.1 [ ] 2.2 [ ] 2.3 [ ] 2.4 [ ] 2.5
-Phase 3  — Ingestion Engine       [ ] 3.1 [ ] 3.2 [ ] 3.3
-Phase 4  — Opportunity Brain      [ ] 4.1 [ ] 4.2
-Phase 5  — Simulation Engine      [ ] 5.1 [ ] 5.2
-Phase 6  — Execution Engine       [ ] 6.1 [ ] 6.2
-Phase 7  — Integration            [ ] 7.1 [ ] 7.2
-Phase 8  — Property & Chaos       [ ] 8.1 [ ] 8.2
+Phase 0  — Project Hygiene        [x] 0.1 [x] 0.2
+Phase 1  — Foundation             [x] 1.1 [x] 1.2 [x] 1.3 [x] 1.4
+Phase 2  — Smart Contract         [x] 2.1 [x] 2.2 [x] 2.3 [x] 2.4 [x] 2.5
+Phase 3  — Ingestion Engine       [x] 3.1 [x] 3.2 [x] 3.3
+Phase 4  — Opportunity Brain      [x] 4.1 [x] 4.2
+Phase 5  — Simulation Engine      [x] 5.1 [x] 5.2
+Phase 6  — Execution Engine       [x] 6.1 [x] 6.2
+Phase 7  — Integration            [x] 7.1 [x] 7.2
+Phase 8  — Property & Chaos       [x] 8.1 [x] 8.2 [x] 8.3
 Phase 9  — Testnet Validation     [ ] 9.1
 Phase 10 — Mainnet Launch         [ ] 10.1
 Phase 11 — Optimisation           [ ] 11.1 [ ] 11.2 [ ] 11.3
@@ -3492,7 +3521,10 @@ Phase 12 — Expansion              [ ] 12.1 [ ] 12.2
 Phase 13 — Open Source & Grants   [ ] 13.1 [ ] 13.2
 ```
 
-Total: 13 phases, 27 mini-phases, 27 self-contained prompts.
+Total: 13 phases, 28 mini-phases, 28 self-contained prompts.
+
+**Last completed:** 8.3 — Benchmarking Infrastructure (commit `9cd34f2`, 2026-03-08)
+**Next up:** 9.1 — Testnet Infrastructure and Smoke Tests
 
 ---
 
