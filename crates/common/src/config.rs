@@ -52,6 +52,12 @@ pub struct PoolsConfig {
     /// On Alchemy free tier this MUST be set so chunks of ≤10 blocks are requested.
     #[serde(default)]
     pub seed_from_block: u64,
+    /// Explicit list of pool addresses to pre-seed at startup (bypasses factory scan).
+    /// Each entry should be a checksummed hex address string.
+    /// Reserves are populated to zero and updated on the first reconcile pass.
+    /// Useful on testnets where factory event scanning yields no results.
+    #[serde(default)]
+    pub known_pools: Vec<String>,
 }
 
 /// `[execution]` section.

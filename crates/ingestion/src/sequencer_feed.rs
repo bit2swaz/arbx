@@ -7,15 +7,27 @@
 //! - Detected swaps are published to a [`tokio::sync::mpsc`] channel.
 //! - [`BackoffCalculator`] implements the exponential-backoff delay schedule.
 //!
+//! # Feed-first pool discovery
+//! When a transaction is seen whose calldata starts with a known swap selector but
+//! the target address is not yet in the pool store, the manager probes the target
+//! address on-chain (via `getReserves()` or `slot0()`) to determine if it is a
+//! V2- or V3-style pool.  Successful probes auto-register the pool so subsequent
+//! swaps can be detected and arb paths scanned immediately.
+//!
 //! # Testability
 //! [`SequencerFeedManager::process_transaction`] is a pure, synchronous method
 //! that can be exercised directly with crafted [`TxInfo`] inputs — no network
 //! connection required.
 
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use alloy::network::Ethereum;
 use alloy::primitives::{Address, Bytes, TxHash, U256};
-use arbx_common::types::PoolState;
+use alloy::providers::RootProvider;
+use alloy::sol;
+use arbx_common::types::{DexKind, PoolState};
 use tokio::sync::mpsc;
 
 use crate::pool_state::PoolStateStore;
@@ -34,6 +46,42 @@ const KNOWN_SELECTORS: &[[u8; 4]] = &[UNISWAP_V3_SWAP, UNIV2_SWAP];
 /// Swap is "large" when the estimated amount exceeds this many basis points
 /// (0.1 %) of total pool reserves.
 const LARGE_SWAP_THRESHOLD_BPS: u128 = 10;
+
+// ─── ABI stubs for pool probing ───────────────────────────────────────────────
+
+sol! {
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    interface IUniswapV2PairProbe {
+        function getReserves()
+            external
+            view
+            returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+        function token0() external view returns (address);
+        function token1() external view returns (address);
+    }
+
+    #[allow(missing_docs)]
+    #[sol(rpc)]
+    interface IUniswapV3PoolProbe {
+        function slot0()
+            external
+            view
+            returns (
+                uint160 sqrtPriceX96,
+                int24   tick,
+                uint16  observationIndex,
+                uint16  observationCardinality,
+                uint16  observationCardinalityNext,
+                uint8   feeProtocol,
+                bool    unlocked
+            );
+        function liquidity() external view returns (uint128);
+        function token0() external view returns (address);
+        function token1() external view returns (address);
+        function fee() external view returns (uint24);
+    }
+}
 
 // ─── TxInfo ──────────────────────────────────────────────────────────────────
 
@@ -149,14 +197,22 @@ impl BackoffCalculator {
 
 /// Drives the Arbitrum sequencer feed: connects, detects swaps, and forwards
 /// them via a channel, reconnecting with exponential backoff on error.
+///
+/// When a transaction targets an address not yet in the pool store but has a
+/// known swap selector, the manager probes the address on-chain to
+/// auto-register it (feed-first pool discovery).
 pub struct SequencerFeedManager {
     config: FeedConfig,
     pool_store: PoolStateStore,
     swap_tx: mpsc::Sender<DetectedSwap>,
+    /// Optional RPC provider for feed-first pool discovery probes.
+    provider: Option<Arc<RootProvider<Ethereum>>>,
+    /// Addresses already probed (to avoid re-probing unknown addresses repeatedly).
+    probed: Arc<Mutex<HashSet<Address>>>,
 }
 
 impl SequencerFeedManager {
-    /// Constructs a new manager.
+    /// Constructs a new manager without feed-first pool discovery.
     pub fn new(
         config: FeedConfig,
         pool_store: PoolStateStore,
@@ -166,7 +222,17 @@ impl SequencerFeedManager {
             config,
             pool_store,
             swap_tx,
+            provider: None,
+            probed: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    /// Enables feed-first pool discovery: when a swap selector is seen
+    /// targeting an unknown address, the manager probes it on-chain to
+    /// determine if it is a V2 or V3 pool and auto-registers it.
+    pub fn with_provider(mut self, provider: Arc<RootProvider<Ethereum>>) -> Self {
+        self.provider = Some(provider);
+        self
     }
 
     /// Runs the feed loop indefinitely.
@@ -236,11 +302,73 @@ impl SequencerFeedManager {
                         tracing::warn!("Swap channel closed; stopping feed");
                         return Err(anyhow::anyhow!("swap sender channel closed"));
                     }
+                } else if let Some(provider) = &self.provider {
+                    // Feed-first discovery: if this looks like a swap to an unknown
+                    // address, probe it on-chain to see if it's a pool.
+                    self.maybe_probe_and_register(&tx_info, provider).await;
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Probes `tx.to` on-chain when it has a known swap selector but is not
+    /// yet in the pool store.  Registers it as a V2 or V3 pool if successful.
+    async fn maybe_probe_and_register(&self, tx: &TxInfo, provider: &Arc<RootProvider<Ethereum>>) {
+        let to = match tx.to {
+            Some(a) => a,
+            None => return,
+        };
+
+        // Must have a known swap selector.
+        if tx.input.len() < 4 {
+            return;
+        }
+        let sel: [u8; 4] = match tx.input[0..4].try_into() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if !KNOWN_SELECTORS.contains(&sel) {
+            return;
+        }
+
+        // Skip if already in store or already probed.
+        if self.pool_store.get(&to).is_some() {
+            return;
+        }
+        {
+            let mut probed = self.probed.lock().unwrap_or_else(|e| e.into_inner());
+            if !probed.insert(to) {
+                return; // already probed
+            }
+        }
+
+        tracing::debug!(address = %to, "feed-first: probing unknown swap target");
+
+        // Try V3 first (slot0 + liquidity + token0/1 + fee)
+        if let Some(pool) = probe_as_v3(to, provider).await {
+            tracing::info!(
+                address = %to,
+                token0  = %pool.token0,
+                token1  = %pool.token1,
+                fee     = pool.fee_tier,
+                "feed-first: registered new UniswapV3 pool",
+            );
+            self.pool_store.upsert(pool);
+            return;
+        }
+
+        // Then try V2 (getReserves + token0/1)
+        if let Some(pool) = probe_as_v2(to, provider).await {
+            tracing::info!(
+                address = %to,
+                token0  = %pool.token0,
+                token1  = %pool.token1,
+                "feed-first: registered new CamelotV2/SushiSwap pool",
+            );
+            self.pool_store.upsert(pool);
+        }
     }
 
     /// Inspects a single transaction and returns a [`DetectedSwap`] when it
@@ -280,6 +408,43 @@ impl SequencerFeedManager {
 }
 
 // ─── Private Helpers ─────────────────────────────────────────────────────────
+
+/// Attempts to read V3 pool metadata from `addr`.
+/// Returns a stub `PoolState` (zero reserves — reconciler will hydrate) on success.
+async fn probe_as_v3(addr: Address, provider: &Arc<RootProvider<Ethereum>>) -> Option<PoolState> {
+    let contract = IUniswapV3PoolProbe::new(addr, provider.as_ref());
+    let token0_raw = contract.token0().call().await.ok()?.0;
+    let token1_raw = contract.token1().call().await.ok()?.0;
+    let fee_raw: alloy::primitives::aliases::U24 = contract.fee().call().await.ok()?;
+    Some(PoolState {
+        address: addr,
+        token0: Address::from(token0_raw),
+        token1: Address::from(token1_raw),
+        reserve0: U256::ZERO,
+        reserve1: U256::ZERO,
+        fee_tier: fee_raw.to::<u32>(),
+        last_updated_block: 0,
+        dex: arbx_common::types::DexKind::UniswapV3,
+    })
+}
+
+/// Attempts to read V2 pool metadata from `addr`.
+/// Returns a stub `PoolState` (zero reserves — reconciler will hydrate) on success.
+async fn probe_as_v2(addr: Address, provider: &Arc<RootProvider<Ethereum>>) -> Option<PoolState> {
+    let contract = IUniswapV2PairProbe::new(addr, provider.as_ref());
+    let token0_raw = contract.token0().call().await.ok()?.0;
+    let token1_raw = contract.token1().call().await.ok()?.0;
+    Some(PoolState {
+        address: addr,
+        token0: Address::from(token0_raw),
+        token1: Address::from(token1_raw),
+        reserve0: U256::ZERO,
+        reserve1: U256::ZERO,
+        fee_tier: 300_u32,
+        last_updated_block: 0,
+        dex: arbx_common::types::DexKind::CamelotV2,
+    })
+}
 
 /// Returns `true` when the estimated swap size exceeds
 /// [`LARGE_SWAP_THRESHOLD_BPS`] of total pool reserves.

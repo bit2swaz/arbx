@@ -127,9 +127,7 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
     }
 
     // ── 3. Bootstrap PoolStateStore ───────────────────────────────────────
-    // Seed the store from factory event logs so the sequencer feed can match
-    // swap calls to known pools immediately.  The BlockReconciler will hydrate
-    // accurate reserves on the first pass; seeding with zero reserves is fine.
+    // (a) Seed from factory event logs (may yield 0 on testnets with no pools)
     let pool_store = PoolStateStore::new();
     {
         let seeded = pool_seeder::seed_pools_from_factories(
@@ -143,6 +141,35 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
         )
         .await;
         info!(seeded, "PoolStateStore bootstrapped from factory logs");
+    }
+
+    // (b) Seed any explicitly-configured known_pools (testnet / manual override)
+    {
+        use arbx_common::types::{DexKind, PoolState};
+        let mut known_seeded = 0usize;
+        for addr_str in &config.pools.known_pools {
+            match addr_str.parse::<alloy::primitives::Address>() {
+                Ok(addr) => {
+                    pool_store.upsert(PoolState {
+                        address: addr,
+                        token0: alloy::primitives::Address::ZERO,
+                        token1: alloy::primitives::Address::ZERO,
+                        reserve0: alloy::primitives::U256::ZERO,
+                        reserve1: alloy::primitives::U256::ZERO,
+                        fee_tier: 300,
+                        last_updated_block: 0,
+                        dex: DexKind::CamelotV2,
+                    });
+                    known_seeded += 1;
+                }
+                Err(e) => {
+                    tracing::warn!(address = %addr_str, error = %e, "invalid known_pool address — skipping");
+                }
+            }
+        }
+        if known_seeded > 0 {
+            info!(known_seeded, "seeded known_pools from config");
+        }
     }
 
     // ── 4. Create PnlTracker ──────────────────────────────────────────────
@@ -215,7 +242,8 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
         feed_url: config.network.sequencer_feed_url.clone(),
         ..FeedConfig::default()
     };
-    let feed_mgr = SequencerFeedManager::new(feed_config, pool_store.clone(), swap_tx);
+    let feed_mgr = SequencerFeedManager::new(feed_config, pool_store.clone(), swap_tx)
+        .with_provider(Arc::clone(&provider));
     let handle_feed: JoinHandle<anyhow::Result<()>> =
         tokio::spawn(async move { feed_mgr.run().await });
 

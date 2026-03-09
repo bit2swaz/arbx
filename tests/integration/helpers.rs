@@ -63,6 +63,7 @@ pub fn make_test_config() -> Config {
             sushiswap_factory: format!("{}", addr(0xB3)),
             traderjoe_factory: format!("{}", addr(0xB4)),
             seed_from_block: 0,
+            known_pools: vec![],
         },
         execution: ExecutionConfig {
             contract_address: format!("{}", addr(0xCE)),
