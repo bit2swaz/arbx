@@ -1,0 +1,13 @@
+{
+  "total_gas_spent_wei": "0",
+  "total_gas_spent_usd": 0.0,
+  "total_profit_wei": "0",
+  "total_profit_usd": 0.0,
+  "net_pnl_usd": 0.0,
+  "successful_arbs": 0,
+  "reverted_arbs": 0,
+  "total_submissions": 0,
+  "budget_remaining_usd": 60.0,
+  "session_start_ms": 1773045618401,
+  "last_updated_ms": 1773045618401
+}

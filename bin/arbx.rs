@@ -48,6 +48,7 @@ use arbx_detector::{
 };
 use arbx_executor::submitter::{AlloyTransactionSender, TransactionSubmitter};
 use arbx_ingestion::{
+    pool_seeder,
     pool_state::PoolStateStore,
     reconciler::{AlloyReserveFetcher, BlockReconciler},
     sequencer_feed::{DetectedSwap, FeedConfig, SequencerFeedManager},
@@ -126,10 +127,22 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
     }
 
     // ── 3. Bootstrap PoolStateStore ───────────────────────────────────────
-    // The store starts empty; the SequencerFeedManager adds pools as swaps
-    // arrive, and BlockReconciler keeps reserves fresh on every new block.
+    // Seed the store from factory event logs so the sequencer feed can match
+    // swap calls to known pools immediately.  The BlockReconciler will hydrate
+    // accurate reserves on the first pass; seeding with zero reserves is fine.
     let pool_store = PoolStateStore::new();
-    info!("PoolStateStore initialised (populated live by feed + reconciler)");
+    {
+        let seeded = pool_seeder::seed_pools_from_factories(
+            Arc::clone(&provider),
+            &pool_store,
+            &config.pools.uniswap_v3_factory,
+            &config.pools.camelot_factory,
+            &config.pools.sushiswap_factory,
+            &config.pools.traderjoe_factory,
+        )
+        .await;
+        info!(seeded, "PoolStateStore bootstrapped from factory logs");
+    }
 
     // ── 4. Create PnlTracker ──────────────────────────────────────────────
     let pnl_file =
