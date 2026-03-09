@@ -12,9 +12,11 @@
 //! reserves (0); the [`BlockReconciler`] will hydrate accurate reserves on the
 //! next reconcile pass.
 //!
-//! # Performance
-//! Sepolia has relatively few blocks.  We scan from block 0 in one shot.
-//! On mainnet this would need pagination; that is a Phase 11 concern.
+//! # Block range chunking
+//! Alchemy's free tier limits `eth_getLogs` to a maximum of 10 blocks per
+//! request.  We therefore scan in chunks of [`CHUNK_SIZE`] blocks from
+//! `seed_from_block` (configured per-environment) up to the current head.
+//! On mainnet with a full archive node the chunk size can be set much higher.
 
 use std::sync::Arc;
 
@@ -26,6 +28,13 @@ use arbx_common::types::{DexKind, PoolState};
 use tracing::{debug, info, warn};
 
 use crate::pool_state::PoolStateStore;
+
+// ─── Tuning ───────────────────────────────────────────────────────────────────
+
+/// Maximum blocks per `eth_getLogs` request.
+/// Alchemy free tier enforces a 10-block limit; paid tiers allow up to 10 000.
+/// Set conservatively so the seeder works on the free tier out of the box.
+const CHUNK_SIZE: u64 = 10;
 
 // ─── Event topic keccak256 hashes ────────────────────────────────────────────
 
@@ -49,9 +58,9 @@ const POOL_CREATED_TOPIC: B256 = B256::new([
 
 /// Seed `store` with every pool discovered from the configured factory contracts.
 ///
-/// Each factory is queried for its pool-creation events over all blocks.
-/// Pools are inserted with zero reserves — the block reconciler will fill them
-/// in on the next pass.
+/// Scans factory event logs in [`CHUNK_SIZE`]-block chunks from `seed_from_block`
+/// to the current chain head.  Pools are inserted with zero reserves — the block
+/// reconciler will fill them in on the next pass.
 ///
 /// Returns the total number of pools inserted.
 pub async fn seed_pools_from_factories(
@@ -61,12 +70,37 @@ pub async fn seed_pools_from_factories(
     camelot_factory: &str,
     sushiswap_factory: &str,
     traderjoe_factory: &str,
+    seed_from_block: u64,
 ) -> usize {
     let mut total = 0usize;
 
+    // Fetch current head so we know the upper bound of the scan range.
+    let head = match provider.get_block_number().await {
+        Ok(n) => n,
+        Err(e) => {
+            warn!(error = %e, "failed to fetch current block number; skipping pool seeding");
+            return 0;
+        }
+    };
+
+    if head < seed_from_block {
+        info!(
+            head,
+            seed_from_block, "seed_from_block is ahead of chain head; no blocks to scan"
+        );
+        return 0;
+    }
+
+    info!(
+        from = seed_from_block,
+        to = head,
+        chunk = CHUNK_SIZE,
+        "scanning factory logs for pool seeds"
+    );
+
     // ── Uniswap V3 ────────────────────────────────────────────────────────────
     if let Ok(addr) = uniswap_v3_factory.parse::<Address>() {
-        match fetch_v3_pools(&provider, addr).await {
+        match fetch_v3_pools(&provider, addr, seed_from_block, head).await {
             Ok(pools) => {
                 let n = pools.len();
                 for p in pools {
@@ -86,7 +120,7 @@ pub async fn seed_pools_from_factories(
 
     // ── Camelot V2 ────────────────────────────────────────────────────────────
     if let Ok(addr) = camelot_factory.parse::<Address>() {
-        match fetch_v2_pools(&provider, addr, DexKind::CamelotV2).await {
+        match fetch_v2_pools(&provider, addr, DexKind::CamelotV2, seed_from_block, head).await {
             Ok(pools) => {
                 let n = pools.len();
                 for p in pools {
@@ -101,7 +135,7 @@ pub async fn seed_pools_from_factories(
 
     // ── SushiSwap ─────────────────────────────────────────────────────────────
     if let Ok(addr) = sushiswap_factory.parse::<Address>() {
-        match fetch_v2_pools(&provider, addr, DexKind::SushiSwap).await {
+        match fetch_v2_pools(&provider, addr, DexKind::SushiSwap, seed_from_block, head).await {
             Ok(pools) => {
                 let n = pools.len();
                 for p in pools {
@@ -116,7 +150,7 @@ pub async fn seed_pools_from_factories(
 
     // ── Trader Joe V1 ─────────────────────────────────────────────────────────
     if let Ok(addr) = traderjoe_factory.parse::<Address>() {
-        match fetch_v2_pools(&provider, addr, DexKind::TraderJoeV1).await {
+        match fetch_v2_pools(&provider, addr, DexKind::TraderJoeV1, seed_from_block, head).await {
             Ok(pools) => {
                 let n = pools.len();
                 for p in pools {
@@ -135,7 +169,10 @@ pub async fn seed_pools_from_factories(
 
 // ─── V3 pool discovery ────────────────────────────────────────────────────────
 
-/// Query `PoolCreated` events from a Uniswap V3 factory.
+/// Query `PoolCreated` events from a Uniswap V3 factory over `[from, to]`.
+///
+/// Requests are split into [`CHUNK_SIZE`]-block windows to comply with
+/// Alchemy free-tier restrictions.
 ///
 /// Event layout:
 /// ```text
@@ -150,68 +187,81 @@ pub async fn seed_pools_from_factories(
 async fn fetch_v3_pools(
     provider: &Arc<RootProvider<Ethereum>>,
     factory: Address,
+    from_block: u64,
+    to_block: u64,
 ) -> anyhow::Result<Vec<PoolState>> {
-    let filter = Filter::new()
-        .address(factory)
-        .event_signature(POOL_CREATED_TOPIC)
-        .from_block(0u64);
+    let mut pools = Vec::new();
+    let mut start = from_block;
 
-    let logs = provider.get_logs(&filter).await?;
-    debug!(count = logs.len(), "raw PoolCreated logs");
+    while start <= to_block {
+        let end = (start + CHUNK_SIZE - 1).min(to_block);
 
-    let mut pools = Vec::with_capacity(logs.len());
+        let filter = Filter::new()
+            .address(factory)
+            .event_signature(POOL_CREATED_TOPIC)
+            .from_block(start)
+            .to_block(end);
 
-    for log in &logs {
-        // token0, token1 are indexed topics[1] and topics[2]
-        let token0 = match log.topics().get(1) {
-            Some(t) => Address::from_word(*t),
-            None => {
-                debug!("PoolCreated log missing token0 topic — skipping");
+        let logs = provider.get_logs(&filter).await?;
+        debug!(
+            count = logs.len(),
+            start, end, "raw PoolCreated logs in chunk"
+        );
+
+        for log in &logs {
+            // token0, token1 are indexed topics[1] and topics[2]
+            let token0 = match log.topics().get(1) {
+                Some(t) => Address::from_word(*t),
+                None => {
+                    debug!("PoolCreated log missing token0 topic — skipping");
+                    continue;
+                }
+            };
+            let token1 = match log.topics().get(2) {
+                Some(t) => Address::from_word(*t),
+                None => {
+                    debug!("PoolCreated log missing token1 topic — skipping");
+                    continue;
+                }
+            };
+            // fee is topics[3] (lower 24 bits)
+            let fee_tier = log
+                .topics()
+                .get(3)
+                .map(|t| {
+                    let v = U256::from_be_bytes(t.0);
+                    v.wrapping_rem(U256::from(u64::MAX))
+                        .try_into()
+                        .unwrap_or(3000u32)
+                })
+                .unwrap_or(3000u32);
+
+            // pool address is the last 20 bytes of `data` (after 64 bytes of tickSpacing + padding)
+            let data = log.data().data.as_ref();
+            if data.len() < 64 {
+                debug!("PoolCreated log data too short — skipping");
                 continue;
             }
-        };
-        let token1 = match log.topics().get(2) {
-            Some(t) => Address::from_word(*t),
-            None => {
-                debug!("PoolCreated log missing token1 topic — skipping");
+            // data layout: tickSpacing(32) + pool(32, right-padded address)
+            let pool_addr = Address::from_slice(&data[44..64]);
+
+            if pool_addr.is_zero() {
                 continue;
             }
-        };
-        // fee is topics[3] (lower 24 bits)
-        let fee_tier = log
-            .topics()
-            .get(3)
-            .map(|t| {
-                let v = U256::from_be_bytes(t.0);
-                v.wrapping_rem(U256::from(u64::MAX))
-                    .try_into()
-                    .unwrap_or(3000u32)
-            })
-            .unwrap_or(3000u32);
 
-        // pool address is the last 20 bytes of `data` (after 64 bytes of tickSpacing + padding)
-        let data = log.data().data.as_ref();
-        if data.len() < 64 {
-            debug!("PoolCreated log data too short — skipping");
-            continue;
-        }
-        // data layout: tickSpacing(32) + pool(32, right-padded address)
-        let pool_addr = Address::from_slice(&data[44..64]);
-
-        if pool_addr.is_zero() {
-            continue;
+            pools.push(PoolState {
+                address: pool_addr,
+                token0,
+                token1,
+                reserve0: U256::ZERO,
+                reserve1: U256::ZERO,
+                fee_tier,
+                last_updated_block: 0,
+                dex: DexKind::UniswapV3,
+            });
         }
 
-        pools.push(PoolState {
-            address: pool_addr,
-            token0,
-            token1,
-            reserve0: U256::ZERO,
-            reserve1: U256::ZERO,
-            fee_tier,
-            last_updated_block: 0,
-            dex: DexKind::UniswapV3,
-        });
+        start = end + 1;
     }
 
     Ok(pools)
@@ -219,7 +269,9 @@ async fn fetch_v3_pools(
 
 // ─── V2 pool discovery ────────────────────────────────────────────────────────
 
-/// Query `PairCreated` events from a Uniswap-V2-style factory.
+/// Query `PairCreated` events from a Uniswap-V2-style factory over `[from, to]`.
+///
+/// Requests are split into [`CHUNK_SIZE`]-block windows.
 ///
 /// Event layout:
 /// ```text
@@ -234,55 +286,65 @@ async fn fetch_v2_pools(
     provider: &Arc<RootProvider<Ethereum>>,
     factory: Address,
     dex: DexKind,
+    from_block: u64,
+    to_block: u64,
 ) -> anyhow::Result<Vec<PoolState>> {
-    let filter = Filter::new()
-        .address(factory)
-        .event_signature(PAIR_CREATED_TOPIC)
-        .from_block(0u64);
+    let mut pools = Vec::new();
+    let mut start = from_block;
 
-    let logs = provider.get_logs(&filter).await?;
-    debug!(count = logs.len(), dex = ?dex, "raw PairCreated logs");
+    while start <= to_block {
+        let end = (start + CHUNK_SIZE - 1).min(to_block);
 
-    let mut pools = Vec::with_capacity(logs.len());
+        let filter = Filter::new()
+            .address(factory)
+            .event_signature(PAIR_CREATED_TOPIC)
+            .from_block(start)
+            .to_block(end);
 
-    for log in &logs {
-        let token0 = match log.topics().get(1) {
-            Some(t) => Address::from_word(*t),
-            None => {
-                debug!("PairCreated log missing token0 topic — skipping");
+        let logs = provider.get_logs(&filter).await?;
+        debug!(count = logs.len(), dex = ?dex, start, end, "raw PairCreated logs in chunk");
+
+        for log in &logs {
+            let token0 = match log.topics().get(1) {
+                Some(t) => Address::from_word(*t),
+                None => {
+                    debug!("PairCreated log missing token0 topic — skipping");
+                    continue;
+                }
+            };
+            let token1 = match log.topics().get(2) {
+                Some(t) => Address::from_word(*t),
+                None => {
+                    debug!("PairCreated log missing token1 topic — skipping");
+                    continue;
+                }
+            };
+
+            // pair address is the first 32 bytes of data (right-aligned address)
+            let data = log.data().data.as_ref();
+            if data.len() < 32 {
+                debug!("PairCreated log data too short — skipping");
                 continue;
             }
-        };
-        let token1 = match log.topics().get(2) {
-            Some(t) => Address::from_word(*t),
-            None => {
-                debug!("PairCreated log missing token1 topic — skipping");
+            let pair_addr = Address::from_slice(&data[12..32]);
+
+            if pair_addr.is_zero() {
                 continue;
             }
-        };
 
-        // pair address is the first 32 bytes of data (right-aligned address)
-        let data = log.data().data.as_ref();
-        if data.len() < 32 {
-            debug!("PairCreated log data too short — skipping");
-            continue;
+            pools.push(PoolState {
+                address: pair_addr,
+                token0,
+                token1,
+                reserve0: U256::ZERO,
+                reserve1: U256::ZERO,
+                fee_tier: 3000, // V2-style constant 0.3%
+                last_updated_block: 0,
+                dex,
+            });
         }
-        let pair_addr = Address::from_slice(&data[12..32]);
 
-        if pair_addr.is_zero() {
-            continue;
-        }
-
-        pools.push(PoolState {
-            address: pair_addr,
-            token0,
-            token1,
-            reserve0: U256::ZERO,
-            reserve1: U256::ZERO,
-            fee_tier: 3000, // V2-style constant 0.3%
-            last_updated_block: 0,
-            dex,
-        });
+        start = end + 1;
     }
 
     Ok(pools)

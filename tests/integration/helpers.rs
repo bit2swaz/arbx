@@ -62,6 +62,7 @@ pub fn make_test_config() -> Config {
             camelot_factory: format!("{}", addr(0xB2)),
             sushiswap_factory: format!("{}", addr(0xB3)),
             traderjoe_factory: format!("{}", addr(0xB4)),
+            seed_from_block: 0,
         },
         execution: ExecutionConfig {
             contract_address: format!("{}", addr(0xCE)),

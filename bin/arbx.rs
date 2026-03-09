@@ -139,6 +139,7 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
             &config.pools.camelot_factory,
             &config.pools.sushiswap_factory,
             &config.pools.traderjoe_factory,
+            config.pools.seed_from_block,
         )
         .await;
         info!(seeded, "PoolStateStore bootstrapped from factory logs");

@@ -47,6 +47,11 @@ pub struct PoolsConfig {
     pub camelot_factory: String,
     pub sushiswap_factory: String,
     pub traderjoe_factory: String,
+    /// First block to scan when seeding pool state from factory logs.
+    /// Set to a recent block on testnets to avoid scanning millions of empty blocks.
+    /// On Alchemy free tier this MUST be set so chunks of ≤10 blocks are requested.
+    #[serde(default)]
+    pub seed_from_block: u64,
 }
 
 /// `[execution]` section.
@@ -165,6 +170,7 @@ uniswap_v3_factory = "0x1F98431c8aD98523631AE4a59f267346ea31F984"
 camelot_factory    = "0x6EcCab422D763aC031210895C81787E87B43A652"
 sushiswap_factory  = "0xc35DADB65012eC5796536bD9864eD8773aBc74C4"
 traderjoe_factory  = "0x9Ad6C38BE94206cA50bb0d90783181662f0CfA10"
+seed_from_block    = 0
 
 [execution]
 contract_address           = "0x0000000000000000000000000000000000000001"
