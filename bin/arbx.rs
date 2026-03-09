@@ -68,6 +68,12 @@ struct Cli {
     /// Simulate paths but never submit transactions on-chain.
     #[arg(long)]
     dry_run: bool,
+
+    /// Run a self-test that validates the detection pipeline with synthetic
+    /// data, then exit.  Exits 0 on success, 1 on failure.  Useful for
+    /// smoke-testing the binary without a live sequencer feed.
+    #[arg(long)]
+    self_test: bool,
 }
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
@@ -89,12 +95,108 @@ async fn main() -> anyhow::Result<()> {
         info!("DRY RUN mode enabled — transactions will NOT be submitted on-chain");
     }
 
+    if cli.self_test {
+        return self_test(&config);
+    }
+
     if let Err(e) = run(config, cli.dry_run).await {
         error!(error = %e, "arbx pipeline exited with error");
         std::process::exit(1);
     }
 
     info!("arbx shut down cleanly");
+    Ok(())
+}
+
+// ─── Self-test ────────────────────────────────────────────────────────────────
+
+/// Validates the detection pipeline with two synthetic pools and one injected
+/// swap.  Exits 0 on success, 1 on failure.
+///
+/// This is the canonical Phase 9.1 smoke-test path for testnets where the
+/// sequencer feed carries zero DEX swap transactions.
+fn self_test(config: &Config) -> anyhow::Result<()> {
+    use alloy::primitives::{address, U256};
+    use arbx_common::{
+        metrics::Metrics,
+        types::{DexKind, PoolState},
+    };
+    use arbx_detector::opportunity::PathScanner;
+    use arbx_ingestion::pool_state::PoolStateStore;
+
+    info!("--- self-test: validating detection pipeline ---");
+
+    // ── 1. Synthetic tokens ───────────────────────────────────────────────
+    // WETH-like and USDC-like — arbitrary but deterministic addresses.
+    let token_a = address!("0000000000000000000000000000000000000001");
+    let token_b = address!("0000000000000000000000000000000000000002");
+    let pool_addr_1 = address!("1111111111111111111111111111111111111111");
+    let pool_addr_2 = address!("2222222222222222222222222222222222222222");
+
+    let reserve = U256::from(1_000_000_000_000u128); // 1 trillion units each side
+
+    // Pool A: token_a / token_b  (price slightly off to create arb opportunity)
+    let pool_a = PoolState {
+        address: pool_addr_1,
+        token0: token_a,
+        token1: token_b,
+        reserve0: reserve,
+        reserve1: reserve * U256::from(2u32), // token_b is 2× cheaper here
+        fee_tier: 3000,
+        last_updated_block: 0,
+        dex: DexKind::CamelotV2,
+    };
+
+    // Pool B: token_b / token_a  (token_b is 1× cheaper here — arb exists)
+    let pool_b = PoolState {
+        address: pool_addr_2,
+        token0: token_b,
+        token1: token_a,
+        reserve0: reserve,
+        reserve1: reserve,
+        fee_tier: 3000,
+        last_updated_block: 0,
+        dex: DexKind::SushiSwap,
+    };
+
+    // ── 2. Seed store ─────────────────────────────────────────────────────
+    let store = PoolStateStore::new();
+    store.upsert(pool_a.clone());
+    store.upsert(pool_b);
+
+    info!(
+        pool_a = %pool_addr_1,
+        pool_b = %pool_addr_2,
+        "self-test: seeded 2 synthetic pools",
+    );
+
+    // ── 3. Scan for two-hop paths ─────────────────────────────────────────
+    let scanner = PathScanner::new(store);
+    let paths = scanner.scan(pool_addr_1);
+
+    if paths.is_empty() {
+        error!("self-test FAIL: PathScanner found 0 two-hop paths — detection pipeline broken");
+        std::process::exit(1);
+    }
+
+    info!(
+        count = paths.len(),
+        "self-test: PathScanner found {} two-hop path(s) ✓",
+        paths.len(),
+    );
+
+    // ── 4. Increment metrics ──────────────────────────────────────────────
+    let metrics = Metrics::new().context("self-test: failed to init metrics")?;
+    metrics.opportunities_detected.inc_by(paths.len() as u64);
+
+    info!(
+        opportunities_detected = metrics.opportunities_detected.get(),
+        "self-test: metrics.opportunities_detected incremented ✓",
+    );
+
+    // ── 5. Print summary ──────────────────────────────────────────────────
+    info!("--- self-test PASSED — detection pipeline is healthy ---");
+    info!("config_chain = {}", config.network.chain_id,);
     Ok(())
 }
 

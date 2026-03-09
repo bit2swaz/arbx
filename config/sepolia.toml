@@ -27,7 +27,7 @@ traderjoe_factory  = "0x9Ad6C38BE94206cA50bb0d90783181662f0CfA10"
 # factory-seeder is effectively a no-op here.  Real pool discovery happens
 # feed-first: the sequencer feed listener probes unknown swap targets on-chain
 # and auto-registers them.  Add explicit addresses to known_pools to bypass this.
-seed_from_block    = 248408050
+seed_from_block    = 248536269
 # No pre-known pools — feed-first discovery will pick them up automatically.
 known_pools        = []
 [execution]

@@ -4,10 +4,12 @@
 #
 # Usage:
 #   ./scripts/smoke_test.sh [--url http://host:port]
+#   ./scripts/smoke_test.sh --self-test [--config path/to/config.toml]
 #
-# Run AFTER the bot has been up for at least 5 minutes on Arbitrum Sepolia.
-# Checks that the top-of-funnel metrics are non-zero, confirming the sequencer
-# feed is live and the opportunity detector is running.
+# Default mode: connects to a running bot and checks /metrics are non-zero.
+# Self-test mode (--self-test): runs `arbx --self-test` directly to validate
+#   the detection pipeline with synthetic data — no live sequencer feed needed.
+#   Use this on testnets where the sequencer feed has no DEX swap activity.
 #
 # Note: simulation/submission/on-chain metrics may stay at 0 on testnet —
 #       that is expected since there is no real liquidity to arb.
@@ -17,16 +19,84 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-METRICS_URL="${1:-http://localhost:9090}"
+# ── Parse arguments ───────────────────────────────────────────────────────────
+
+SELF_TEST=false
+METRICS_URL="http://localhost:9090"
+CONFIG="config/sepolia.toml"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --self-test)
+            SELF_TEST=true
+            shift
+            ;;
+        --config)
+            CONFIG="$2"
+            shift 2
+            ;;
+        --url)
+            METRICS_URL="$2"
+            shift 2
+            ;;
+        *)
+            METRICS_URL="$1"
+            shift
+            ;;
+    esac
+done
+
 METRICS_ENDPOINT="${METRICS_URL}/metrics"
-PASS=0
-FAIL=0
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 dim()   { printf '\033[2m%s\033[0m\n'  "$*"; }
+
+# ── Self-test mode ────────────────────────────────────────────────────────────
+
+if [[ "$SELF_TEST" == "true" ]]; then
+    echo ""
+    echo "=== arbx Self-Test (synthetic pipeline validation) ==="
+    echo ""
+
+    # Source .env if present to supply required env vars
+    if [[ -f .env ]]; then
+        # shellcheck disable=SC1091
+        set -a && source .env && set +a
+    fi
+
+    ARBX_BIN="${ARBX_BIN:-./target/release/arbx}"
+    if [[ ! -x "$ARBX_BIN" ]]; then
+        ARBX_BIN="./target/debug/arbx"
+    fi
+    if [[ ! -x "$ARBX_BIN" ]]; then
+        red "ERROR: arbx binary not found. Run: cargo build --release --bin arbx"
+        exit 1
+    fi
+
+    echo "Binary : $ARBX_BIN"
+    echo "Config : $CONFIG"
+    echo ""
+
+    if "$ARBX_BIN" --config "$CONFIG" --self-test 2>&1; then
+        echo ""
+        green "SMOKE TEST PASSED (self-test mode) — detection pipeline is healthy"
+        echo ""
+        exit 0
+    else
+        echo ""
+        red "SMOKE TEST FAILED (self-test mode) — see output above"
+        echo ""
+        exit 1
+    fi
+fi
+
+# ── Live metrics mode ─────────────────────────────────────────────────────────
+
+PASS=0
+FAIL=0
 
 # Fetch metric value by exact name (first non-comment line starting with $name).
 get_metric() {
@@ -76,6 +146,7 @@ echo ""
 if ! curl -sf "$METRICS_ENDPOINT" > /dev/null 2>&1; then
     red "ERROR: Cannot reach $METRICS_ENDPOINT"
     red "Is the bot running? (./scripts/run_sepolia.sh)"
+    red "Tip: on testnets with no swap activity use: ./scripts/smoke_test.sh --self-test"
     exit 1
 fi
 
@@ -107,6 +178,7 @@ if [[ $FAIL -gt 0 ]]; then
     red "  1. Check the bot has been running for at least 5 minutes"
     red "  2. Check ARBITRUM_SEPOLIA_RPC_URL is valid"
     red "  3. Check logs/sepolia_*.log for errors"
+    red "  4. On testnets with no swap activity: ./scripts/smoke_test.sh --self-test"
     echo ""
     exit 1
 fi
