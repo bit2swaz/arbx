@@ -21,8 +21,9 @@
 #   ./scripts/run_anvil_fork.sh
 #
 # Optional environment overrides:
-#   FORK_BLOCK_NUMBER=105949098  (default, same block as fork integration tests)
-#   RUN_DURATION=600             (seconds to run arbx, default 600 = 10 min)
+#   FORK_BLOCK_NUMBER=285000000  override fork block (default: latest - 20)
+#   SEED_BLOCKS=20000            blocks to scan for pool events (default: 20000)
+#   RUN_DURATION=600             seconds to run arbx (default: 600 = 10 min)
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -51,12 +52,9 @@ for var in ARBITRUM_RPC_URL ARB_EXECUTOR_ADDRESS PRIVATE_KEY; do
 done
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-FORK_BLOCK="${FORK_BLOCK_NUMBER:-105949098}"
 RUN_DURATION="${RUN_DURATION:-600}"
 ANVIL_PORT=8545
 ANVIL_RPC="http://127.0.0.1:${ANVIL_PORT}"
-# Anvil account 0 — default funded test key (safe for local use only)
-ANVIL_FUNDER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
 # Anvil's --fork-url requires HTTP(S), not WebSocket (wss://).
 # The .env ARBITRUM_RPC_URL is often a wss:// URL used for the sequencer feed.
@@ -65,13 +63,48 @@ FORK_RPC_URL="${ARBITRUM_RPC_URL}"
 FORK_RPC_URL="${FORK_RPC_URL/wss:\/\//https://}"
 FORK_RPC_URL="${FORK_RPC_URL/ws:\/\//http://}"
 
+# ── Determine fork block ──────────────────────────────────────────────────────
+# Alchemy free tier only has trie state for recent blocks (not old archive).
+# Default: fork at latest - 20 so the state is definitely available.
+# The pool seeder is told to scan the last SEED_BLOCKS blocks only — scanning
+# billions of historical blocks would blow through compute unit budgets.
+SEED_BLOCKS="${SEED_BLOCKS:-20000}"
+
+if [[ -n "${FORK_BLOCK_NUMBER:-}" ]]; then
+    FORK_BLOCK="$FORK_BLOCK_NUMBER"
+    SEED_FROM=$(( FORK_BLOCK - SEED_BLOCKS ))
+else
+    yellow "Fetching current Arbitrum mainnet head to choose fork block..."
+    LATEST=$(cast block-number --rpc-url "$FORK_RPC_URL" 2>/dev/null || echo "")
+    if [[ -z "$LATEST" || "$LATEST" -le 0 ]]; then
+        red "ERROR: Could not fetch latest block from $FORK_RPC_URL"
+        exit 1
+    fi
+    # 20 blocks behind latest for stability (avoids reorg/indexing races)
+    FORK_BLOCK=$(( LATEST - 20 ))
+    SEED_FROM=$(( FORK_BLOCK - SEED_BLOCKS ))
+fi
+
+if [[ "$SEED_FROM" -lt 0 ]]; then
+    SEED_FROM=0
+fi
+
+# ── Build temp config with correct seed_from_block ────────────────────────────
+# The TOML field is a u64 (not a string), so it can't hold a \${VAR} reference.
+# We patch the value with sed into a temp file so the seeder scans exactly
+# the last SEED_BLOCKS blocks from the fork point — not billions of old blocks.
+TEMP_CONFIG=$(mktemp /tmp/arbx_anvil_fork_XXXXXX.toml)
+trap 'rm -f "$TEMP_CONFIG"' EXIT
+sed "s|^seed_from_block.*|seed_from_block = $SEED_FROM|" config/anvil_fork.toml > "$TEMP_CONFIG"
+dim "Temp config : $TEMP_CONFIG (seed_from_block=$SEED_FROM)"
+
 mkdir -p logs
 LOG_FILE="logs/anvil_fork_$(date +%Y%m%d_%H%M%S).log"
 
 echo ""
 yellow "=== arbx — Anvil Mainnet Fork Validation ==="
 echo ""
-dim "Fork block : $FORK_BLOCK"
+dim "Fork block : $FORK_BLOCK  (seed from: $SEED_FROM)"
 dim "RPC source : $FORK_RPC_URL"
 dim "Executor   : $ARB_EXECUTOR_ADDRESS"
 dim "Run time   : ${RUN_DURATION}s"
@@ -122,14 +155,16 @@ FORK_HEAD=$(cast block-number --rpc-url "$ANVIL_RPC" 2>/dev/null || echo "unknow
 green "Anvil ready — head block: $FORK_HEAD"
 
 # ── Fund the executor address ─────────────────────────────────────────────────
-yellow "Funding executor ($ARB_EXECUTOR_ADDRESS) with 1 ETH for gas..."
-cast send \
-    --rpc-url    "$ANVIL_RPC" \
-    --private-key "$ANVIL_FUNDER_KEY" \
-    "$ARB_EXECUTOR_ADDRESS" \
-    --value 1ether \
-    --quiet
-green "Executor funded."
+# Use anvil_setBalance (Anvil JSON-RPC) instead of cast send.
+# cast send would trigger a trie node fetch from the fork to verify the sender's
+# nonce/balance — which fails when Alchemy doesn't have archive state.
+# anvil_setBalance writes directly to Anvil's in-memory state: zero trie access.
+yellow "Funding executor ($ARB_EXECUTOR_ADDRESS) with 1 ETH via anvil_setBalance..."
+# 0xDE0B6B3A7640000 = 1_000_000_000_000_000_000 wei = 1 ETH
+cast rpc --rpc-url "$ANVIL_RPC" \
+    anvil_setBalance "$ARB_EXECUTOR_ADDRESS" "0xDE0B6B3A7640000" \
+    > /dev/null
+green "Executor funded (anvil_setBalance — no trie access needed)."
 
 # ── Find arbx binary ──────────────────────────────────────────────────────────
 ARBX_BIN="${ARBX_BIN:-./target/release/arbx}"
@@ -145,11 +180,11 @@ dim "Binary: $ARBX_BIN"
 
 # ── Start arbx against the Anvil fork ────────────────────────────────────────
 yellow "Starting arbx against Anvil fork (${RUN_DURATION}s run)..."
-echo "  Config : config/anvil_fork.toml"
+echo "  Config : $TEMP_CONFIG (seed_from_block=$SEED_FROM)"
 echo "  Feed   : wss://arb1.arbitrum.io/feed (live mainnet)"
 echo "  State  : $ANVIL_RPC (fork at block $FORK_BLOCK)"
 echo ""
-"$ARBX_BIN" --config config/anvil_fork.toml 2>&1 | tee "$LOG_FILE" &
+"$ARBX_BIN" --config "$TEMP_CONFIG" 2>&1 | tee "$LOG_FILE" &
 ARBX_PID=$!
 
 # ── Run for the configured duration ──────────────────────────────────────────
