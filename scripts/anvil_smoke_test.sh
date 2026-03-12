@@ -29,7 +29,7 @@ yellow() { printf '\033[33mSKIP\033[0m  %s\n' "$*"; }
 red()    { printf '\033[31mFAIL\033[0m  %s\n' "$*"; }
 
 # ── Fetch metrics once ────────────────────────────────────────────────────────
-if ! METRICS_BODY=$(curl -sf "$METRICS_ENDPOINT" 2>/dev/null); then
+if ! METRICS_BODY=$(curl -sf --max-time 5 --connect-timeout 3 "$METRICS_ENDPOINT" 2>/dev/null); then
     echo ""
     echo "ERROR: Could not reach metrics at $METRICS_ENDPOINT"
     echo ""
