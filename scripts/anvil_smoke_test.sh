@@ -42,9 +42,11 @@ fi
 # ── Helper: extract a counter / gauge value from the scraped body ─────────────
 # Returns the numeric value, or empty string if the metric is absent / zero.
 metric_value() {
-    # Matches lines like: arbx_foo_total 42
+    # Matches lines like: opportunities_detected 42
     # Ignores comment lines (# HELP / # TYPE).
-    echo "$METRICS_BODY" | grep -E "^${1}(\{[^}]*\})? " | awk '{print $NF}' | head -1
+    # '|| true' prevents grep's exit-1-on-no-match from triggering set -e
+    # when the caller does: value=$(metric_value "...").
+    echo "$METRICS_BODY" | grep -E "^${1}(\{[^}]*\})? " | awk '{print $NF}' | head -1 || true
 }
 
 # ── Helper: assert metric >= min ──────────────────────────────────────────────
@@ -70,8 +72,8 @@ check_metric() {
         return
     fi
 
-    # bc -l for float comparison
-    if (( $(echo "$value >= $min" | bc -l) )); then
+    # awk handles both integers and floats; bc may not be installed
+    if awk "BEGIN { exit !($value >= $min) }"; then
         green "$label = $value"
         (( PASS_COUNT++ )) || true
     else
@@ -87,19 +89,18 @@ echo "Endpoint: $METRICS_ENDPOINT"
 echo ""
 
 echo "--- Mandatory: pipeline must be alive ---"
-check_metric "arbx_blocks_processed_total"          1  "blocks_processed"
-check_metric "arbx_opportunities_detected_total"    1  "opportunities_detected"
+# Metric names match crates/common/src/metrics.rs exactly (no arbx_ prefix, no _total).
+check_metric "opportunities_detected"    1  "opportunities_detected"
 
 echo ""
 echo "--- Desired: profit filter and simulation firing ---"
-check_metric "arbx_opportunities_cleared_threshold_total" 0 "cleared_threshold"
-check_metric "arbx_simulations_run_total"                 0 "simulations_run"
-check_metric "arbx_opportunities_cleared_simulation_total" 0 "cleared_simulation"
+check_metric "opportunities_cleared_threshold"  0 "cleared_threshold"
+check_metric "opportunities_cleared_simulation" 0 "cleared_simulation"
 
 echo ""
 echo "--- Info: submission metrics (expected 0 in dry_run mode) ---"
-check_metric "arbx_transactions_submitted_total"  0  "txns_submitted (dry_run)"
-check_metric "arbx_transactions_succeeded_total"  0  "txns_succeeded (dry_run)"
+check_metric "transactions_submitted"  0  "txns_submitted (dry_run)"
+check_metric "transactions_succeeded"  0  "txns_succeeded (dry_run)"
 
 echo ""
 echo "=== Results ==="
@@ -124,8 +125,7 @@ echo "RESULT: PASS — mandatory metrics are healthy."
 echo ""
 echo "Definition of done for Anvil validation:"
 echo "  opportunities_detected > 0   ✓  (feed → detection pipeline firing)"
-echo "  blocks_processed > 0         ✓  (block reconciler ticking)"
-if (( $(echo "$(metric_value 'arbx_opportunities_cleared_simulation_total' || echo 0) > 0" | bc -l 2>/dev/null || echo 0) )); then
+if awk "BEGIN { v=\"$(metric_value 'opportunities_cleared_simulation')\"; exit !(v+0 > 0) }" 2>/dev/null; then
     echo "  cleared_simulation > 0       ✓  BONUS: full arb logic validated!"
 else
     echo "  cleared_simulation = 0       —  no profitable opp found yet (not a failure)"
