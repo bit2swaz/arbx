@@ -14,7 +14,7 @@ fully open source, fully documented.
 
 ## Build Status
 
-**Last updated:** 2026-03-08
+**Last updated:** 2026-03-12
 
 | Phase | Description | Status | Commit |
 |---|---|---|---|
@@ -43,13 +43,14 @@ fully open source, fully documented.
 | 8.1 | Comprehensive property test suite | ✅ | — |
 | 8.2 | Chaos tests: feed + RPC fault injection | ✅ | `ab80e6d` |
 | 8.3 | Benchmarking infrastructure | ✅ | `9cd34f2` |
-| 9.1 | Testnet infrastructure + smoke tests | ⬜ | — |
+| 9.1 | Testnet infrastructure + smoke tests | ✅ | `743e21b` |
+| 9.2 | Anvil fork validation (pre-mainnet) | ⬜ | — |
 | 10.1 | Mainnet launch | ⬜ | — |
 
-**Codebase stats (2026-03-08):**
-- Rust: **6,502 lines** across 24 files
+**Codebase stats (2026-03-12):**
+- Rust: **6,680 lines** across 24 files
 - Solidity: **1,079 lines** across 5 files
-- Tests: **170 passing**, 0 failing, 0 unexpected ignores
+- Tests: **172 passing**, 0 failing, 0 unexpected ignores
 - Benchmarks: **5 hot-path benchmarks** (Criterion 0.5)
 
 ---
@@ -591,27 +592,39 @@ All engineering phases through Phase 8.3 (Benchmarking Infrastructure) are compl
 and committed. The full Rust engine — ingestion, detection, simulation, execution,
 property tests, chaos tests, and benchmarks — is built and green.
 
-**Codebase:** 6,502 lines of Rust · 1,079 lines of Solidity · 170 tests passing
+**Codebase:** 6,680 lines of Rust · 1,079 lines of Solidity · 172 tests passing
 
 ---
 
-### Phase 9 — Testnet Validation (Arbitrum Sepolia) ← NEXT
+### Phase 9 — Testnet Validation ✅ + Anvil Fork Validation ← NEXT
 
-Use **Arbitrum Sepolia** — not Ethereum Sepolia, not Arbitrum Goerli (deprecated).
-Arbitrum Sepolia mirrors mainnet behaviour. No real liquidity to arb, but all
-logic correctness can be validated here before spending real gas.
+#### 9.1 — Arbitrum Sepolia smoke test (complete, commit `743e21b`)
+
+Arbitrum Sepolia is a ghost chain with zero DEX liquidity.  The feed was
+alive and pool-discovery infrastructure was validated.  A `--self-test` flag
+was added to the binary to prove the detect pipeline with synthetic data when
+no real swaps exist on the testnet.
+
+**Outcome:** infrastructure validated, synthetic smoke test passes, 172 tests
+green.  Real end-to-end arb logic (detect → simulate → submit) was NOT
+exercised because no swap activity exists on Arbitrum Sepolia.
+
+#### 9.2 — Anvil mainnet fork validation ← CURRENT
+
+Runs the full bot against a pinned Arbitrum mainnet fork (Anvil) with real
+pool state and the live sequencer feed.  `dry_run = true` — no real ETH spent.
 
 Goals:
-- Smart contract written with Balancer V2 `IFlashLoanRecipient`, tested in Foundry
-- Ingestion engine connects to sequencer feed via `sequencer_client`, pool state
-  maintained in `DashMap`, reconciled every block via RPC
-- Opportunity detector correctly identifies two-hop paths mathematically
-- revm simulation runs correctly against forked Arbitrum state
-- Full end-to-end pipeline runs on Arbitrum Sepolia without errors
-- All observability funnel metrics logging correctly
+- Pool store seeded from real mainnet factory logs (N > 0 pools)
+- Live feed swap events detected and processed
+- Path scanner finds real two-hop opportunities
+- revm simulation runs against real fork state
+- `opportunities_cleared_simulation > 0` at least once
 
-**Definition of done:** Full pipeline runs end-to-end on testnet. Simulation results
-match expected output. Zero unexplained errors or panics.
+**Definition of done:** `simulation succeeded` appears in logs OR
+`arbx_opportunities_cleared_simulation_total > 0` in metrics.
+
+See `docs/ANVIL_FORK_VALIDATION.md` for the complete runbook.
 
 ---
 

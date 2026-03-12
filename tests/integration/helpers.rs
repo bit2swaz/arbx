@@ -75,6 +75,7 @@ pub fn make_test_config() -> Config {
             node_interface_address: "0x00000000000000000000000000000000000000C8".to_owned(),
             l2_gas_units: 500_000,
             receipt_timeout_secs: 30,
+            dry_run: false,
         },
         observability: ObservabilityConfig {
             log_level: "debug".to_owned(),

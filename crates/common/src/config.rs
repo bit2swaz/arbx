@@ -75,6 +75,13 @@ pub struct ExecutionConfig {
     /// Seconds to wait for a transaction receipt before timing out.
     #[serde(default = "default_receipt_timeout_secs")]
     pub receipt_timeout_secs: u64,
+    /// When `true`, run the full simulation path but never broadcast a
+    /// transaction on-chain.  Equivalent to passing `--dry-run` on the CLI.
+    /// Useful in TOML configs (e.g. `config/anvil_fork.toml`) so a config
+    /// file alone is enough to enable dry-run mode without modifying the
+    /// launch command.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 fn default_l2_gas_units() -> u64 {

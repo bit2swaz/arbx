@@ -378,6 +378,7 @@ mod tests {
             node_interface_address: Address::ZERO.to_string(),
             l2_gas_units,
             receipt_timeout_secs: timeout_secs,
+            dry_run: false,
         }
     }
 

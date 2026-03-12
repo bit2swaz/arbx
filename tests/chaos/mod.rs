@@ -600,6 +600,7 @@ fn test_exec_config() -> ExecutionConfig {
         node_interface_address: "0x00000000000000000000000000000000000000C8".to_owned(),
         l2_gas_units: 500_000,
         receipt_timeout_secs: 30, // will be overridden per-test
+        dry_run: false,
     }
 }
 

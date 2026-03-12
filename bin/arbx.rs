@@ -91,7 +91,10 @@ async fn main() -> anyhow::Result<()> {
 
     init_tracing(&config.observability.log_level);
 
-    if cli.dry_run {
+    // dry_run can be set via the CLI flag --dry-run OR via `dry_run = true` in
+    // the [execution] section of the config file (e.g. anvil_fork.toml).
+    let dry_run = cli.dry_run || config.execution.dry_run;
+    if dry_run {
         info!("DRY RUN mode enabled — transactions will NOT be submitted on-chain");
     }
 
@@ -99,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         return self_test(&config);
     }
 
-    if let Err(e) = run(config, cli.dry_run).await {
+    if let Err(e) = run(config, dry_run).await {
         error!(error = %e, "arbx pipeline exited with error");
         std::process::exit(1);
     }
