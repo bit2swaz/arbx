@@ -58,6 +58,13 @@ ANVIL_RPC="http://127.0.0.1:${ANVIL_PORT}"
 # Anvil account 0 — default funded test key (safe for local use only)
 ANVIL_FUNDER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
+# Anvil's --fork-url requires HTTP(S), not WebSocket (wss://).
+# The .env ARBITRUM_RPC_URL is often a wss:// URL used for the sequencer feed.
+# Convert it to https:// so Anvil can fetch trie nodes correctly.
+FORK_RPC_URL="${ARBITRUM_RPC_URL}"
+FORK_RPC_URL="${FORK_RPC_URL/wss:\/\//https://}"
+FORK_RPC_URL="${FORK_RPC_URL/ws:\/\//http://}"
+
 mkdir -p logs
 LOG_FILE="logs/anvil_fork_$(date +%Y%m%d_%H%M%S).log"
 
@@ -65,7 +72,7 @@ echo ""
 yellow "=== arbx — Anvil Mainnet Fork Validation ==="
 echo ""
 dim "Fork block : $FORK_BLOCK"
-dim "RPC source : $ARBITRUM_RPC_URL"
+dim "RPC source : $FORK_RPC_URL"
 dim "Executor   : $ARB_EXECUTOR_ADDRESS"
 dim "Run time   : ${RUN_DURATION}s"
 dim "Log file   : $LOG_FILE"
@@ -82,7 +89,7 @@ done
 # ── Start Anvil fork ──────────────────────────────────────────────────────────
 yellow "Starting Anvil fork at block $FORK_BLOCK..."
 anvil \
-    --fork-url      "$ARBITRUM_RPC_URL" \
+    --fork-url      "$FORK_RPC_URL" \
     --fork-block-number "$FORK_BLOCK" \
     --host          127.0.0.1 \
     --port          "$ANVIL_PORT" \
