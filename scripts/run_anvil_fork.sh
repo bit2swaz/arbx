@@ -72,7 +72,6 @@ SEED_BLOCKS="${SEED_BLOCKS:-20000}"
 
 if [[ -n "${FORK_BLOCK_NUMBER:-}" ]]; then
     FORK_BLOCK="$FORK_BLOCK_NUMBER"
-    SEED_FROM=$(( FORK_BLOCK - SEED_BLOCKS ))
 else
     yellow "Fetching current Arbitrum mainnet head to choose fork block..."
     LATEST=$(cast block-number --rpc-url "$FORK_RPC_URL" 2>/dev/null || echo "")
@@ -82,21 +81,7 @@ else
     fi
     # 20 blocks behind latest for stability (avoids reorg/indexing races)
     FORK_BLOCK=$(( LATEST - 20 ))
-    SEED_FROM=$(( FORK_BLOCK - SEED_BLOCKS ))
 fi
-
-if [[ "$SEED_FROM" -lt 0 ]]; then
-    SEED_FROM=0
-fi
-
-# ── Build temp config with correct seed_from_block ────────────────────────────
-# The TOML field is a u64 (not a string), so it can't hold a \${VAR} reference.
-# We patch the value with sed into a temp file so the seeder scans exactly
-# the last SEED_BLOCKS blocks from the fork point — not billions of old blocks.
-TEMP_CONFIG=$(mktemp /tmp/arbx_anvil_fork_XXXXXX.toml)
-trap 'rm -f "$TEMP_CONFIG"' EXIT
-sed "s|^seed_from_block.*|seed_from_block = $SEED_FROM|" config/anvil_fork.toml > "$TEMP_CONFIG"
-dim "Temp config : $TEMP_CONFIG (seed_from_block=$SEED_FROM)"
 
 mkdir -p logs
 LOG_FILE="logs/anvil_fork_$(date +%Y%m%d_%H%M%S).log"
@@ -104,7 +89,7 @@ LOG_FILE="logs/anvil_fork_$(date +%Y%m%d_%H%M%S).log"
 echo ""
 yellow "=== arbx — Anvil Mainnet Fork Validation ==="
 echo ""
-dim "Fork block : $FORK_BLOCK  (seed from: $SEED_FROM)"
+dim "Fork block : $FORK_BLOCK  (seed window: last $SEED_BLOCKS blocks)"
 dim "RPC source : $FORK_RPC_URL"
 dim "Executor   : $ARB_EXECUTOR_ADDRESS"
 dim "Run time   : ${RUN_DURATION}s"
@@ -118,6 +103,16 @@ for cmd in anvil cast cargo; do
         exit 1
     fi
 done
+
+# ── Kill any stale Anvil process ──────────────────────────────────────────────
+# If a previous run left Anvil alive on port $ANVIL_PORT, the readiness check
+# would succeed against that old instance.  The seed_from_block we compute is
+# derived from the NEW fork block — if the stale Anvil is at a different block,
+# pool_seeder sees seed_from_block > head and skips all scanning (seeded=0).
+if pkill -x anvil 2>/dev/null; then
+    dim "Killed stale Anvil on port $ANVIL_PORT — waiting 2 s for port to free..."
+    sleep 2
+fi
 
 # ── Start Anvil fork ──────────────────────────────────────────────────────────
 yellow "Starting Anvil fork at block $FORK_BLOCK..."
@@ -151,8 +146,18 @@ if [[ "$READY" != "true" ]]; then
     exit 1
 fi
 
-FORK_HEAD=$(cast block-number --rpc-url "$ANVIL_RPC" 2>/dev/null || echo "unknown")
+FORK_HEAD=$(cast block-number --rpc-url "$ANVIL_RPC" 2>/dev/null || echo "0")
 green "Anvil ready — head block: $FORK_HEAD"
+
+# ── Build temp config — seed_from_block derived from ACTUAL Anvil head ───────────
+# seed_from_block must be <= head or pool_seeder exits immediately with seeded=0.
+# We compute it HERE (after Anvil is up) so the value is always grounded in the
+# real Anvil block, not in a pre-start estimate that can be stale or mismatched.
+SEED_FROM=$(( FORK_HEAD > SEED_BLOCKS ? FORK_HEAD - SEED_BLOCKS : 0 ))
+TEMP_CONFIG=$(mktemp /tmp/arbx_anvil_fork_XXXXXX.toml)
+trap 'rm -f "$TEMP_CONFIG"' EXIT
+sed "s|^seed_from_block.*|seed_from_block = $SEED_FROM|" config/anvil_fork.toml > "$TEMP_CONFIG"
+green "Temp config written — seed_from_block=$SEED_FROM  head=$FORK_HEAD"
 
 # ── Fund the executor address ─────────────────────────────────────────────────
 # Use anvil_setBalance (Anvil JSON-RPC) instead of cast send.
