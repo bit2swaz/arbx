@@ -8,6 +8,7 @@
 mod helpers;
 mod testnet_validation;
 
+use std::io::Write as _;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -31,6 +32,52 @@ use helpers::{
     make_reverted_submission_result, make_test_config, make_test_opportunity, temp_pnl_path,
     FixedGasFetcher, PanickingTransactionSender,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BudgetLoopError {
+    BudgetExhausted,
+}
+
+async fn budget_guarded_test_execution_loop(
+    mut opportunity_rx: mpsc::Receiver<Opportunity>,
+    pnl: Arc<PnlTracker>,
+    gas_cost_usd: f64,
+    eth_price_usd: f64,
+    submission_counter: Arc<AtomicUsize>,
+    warn_event_counter: Arc<AtomicUsize>,
+) -> Result<(), BudgetLoopError> {
+    while let Some(_opp) = opportunity_rx.recv().await {
+        if pnl.is_budget_exhausted() {
+            return Err(BudgetLoopError::BudgetExhausted);
+        }
+
+        let gas_wei = ((gas_cost_usd / eth_price_usd) * 1e18).round() as u128;
+        let result = SubmissionResult {
+            tx_hash: alloy::primitives::TxHash::ZERO,
+            success: false,
+            revert_reason: Some("budgeted revert".to_owned()),
+            gas_used: 50_000,
+            l2_gas_cost_wei: alloy::primitives::U256::from(gas_wei),
+            l1_gas_cost_wei: alloy::primitives::U256::ZERO,
+            net_pnl_wei: -alloy::primitives::I256::from_raw(alloy::primitives::U256::from(gas_wei)),
+        };
+
+        pnl.record_submission(&result, eth_price_usd)
+            .await
+            .expect("record_submission must succeed");
+        submission_counter.fetch_add(1, Ordering::SeqCst);
+
+        if pnl.is_budget_low() && !pnl.is_budget_exhausted() {
+            warn_event_counter.fetch_add(1, Ordering::SeqCst);
+        }
+
+        if pnl.is_budget_exhausted() {
+            return Err(BudgetLoopError::BudgetExhausted);
+        }
+    }
+
+    Ok(())
+}
 
 // ─── Shared generic execution loop ───────────────────────────────────────────
 
@@ -381,6 +428,108 @@ async fn integration_channel_backpressure() {
         .await
         .expect("execution loop timed out")
         .expect("execution loop panicked");
+}
+
+#[tokio::test]
+async fn test_kill_switch_halts_at_budget_exhaustion() {
+    let (_tmp_dir, pnl_path) = temp_pnl_path();
+    let pnl = Arc::new(PnlTracker::with_thresholds(pnl_path.clone(), 5.0, 0.5, 1.0).unwrap());
+    let submission_counter = Arc::new(AtomicUsize::new(0));
+    let warn_event_counter = Arc::new(AtomicUsize::new(0));
+    let (opportunity_tx, opportunity_rx) = mpsc::channel(8);
+
+    for _ in 0..6 {
+        opportunity_tx.send(make_test_opportunity()).await.unwrap();
+    }
+    drop(opportunity_tx);
+
+    let result = budget_guarded_test_execution_loop(
+        opportunity_rx,
+        Arc::clone(&pnl),
+        0.80,
+        1.0,
+        Arc::clone(&submission_counter),
+        Arc::clone(&warn_event_counter),
+    )
+    .await;
+
+    assert_eq!(result, Err(BudgetLoopError::BudgetExhausted));
+    assert!(pnl.is_budget_exhausted());
+    assert_eq!(submission_counter.load(Ordering::SeqCst), 5);
+    assert_eq!(warn_event_counter.load(Ordering::SeqCst), 0);
+
+    let snap = pnl.state_snapshot();
+    assert!((snap.total_gas_spent_usd - 4.0).abs() < 0.0001);
+    assert!((snap.budget_remaining_usd - 1.0).abs() < 0.0001);
+
+    let json = std::fs::read_to_string(&pnl_path).expect("pnl state file must exist");
+    let persisted: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+    let total_gas_spent = persisted
+        .get("total_gas_spent_usd")
+        .and_then(|v| v.as_f64())
+        .expect("persisted gas spend");
+    assert!((total_gas_spent - 4.0).abs() < 0.0001);
+}
+
+#[tokio::test]
+async fn test_kill_switch_warn_threshold_logged() {
+    let (_tmp_dir, pnl_path) = temp_pnl_path();
+    let pnl = Arc::new(PnlTracker::with_thresholds(pnl_path, 10.0, 5.0, 1.0).unwrap());
+    let submission_counter = Arc::new(AtomicUsize::new(0));
+    let warn_event_counter = Arc::new(AtomicUsize::new(0));
+    let (opportunity_tx, opportunity_rx) = mpsc::channel(8);
+
+    for _ in 0..5 {
+        opportunity_tx.send(make_test_opportunity()).await.unwrap();
+    }
+    drop(opportunity_tx);
+
+    let result = budget_guarded_test_execution_loop(
+        opportunity_rx,
+        Arc::clone(&pnl),
+        1.10,
+        1.0,
+        Arc::clone(&submission_counter),
+        Arc::clone(&warn_event_counter),
+    )
+    .await;
+
+    assert_eq!(result, Ok(()));
+    assert_eq!(submission_counter.load(Ordering::SeqCst), 5);
+    assert!(warn_event_counter.load(Ordering::SeqCst) >= 1);
+    assert!(pnl.is_budget_low());
+    assert!(!pnl.is_budget_exhausted());
+}
+
+#[tokio::test]
+async fn test_pnl_state_persists_across_restart() {
+    let (_tmp_dir, pnl_path) = temp_pnl_path();
+    let json = r#"{
+  "total_gas_spent_wei": "1000000000000000000",
+  "total_gas_spent_usd": 4.0,
+  "total_profit_wei": "500000000000000000",
+  "total_profit_usd": 1.5,
+  "net_pnl_usd": 1.5,
+  "successful_arbs": 1,
+  "reverted_arbs": 3,
+  "total_submissions": 4,
+  "budget_remaining_usd": 23.0,
+  "session_start_ms": 1,
+  "last_updated_ms": 2
+}"#;
+    let mut file = std::fs::File::create(&pnl_path).unwrap();
+    file.write_all(json.as_bytes()).unwrap();
+    file.sync_all().unwrap();
+
+    let tracker = PnlTracker::with_thresholds(pnl_path, 27.0, 5.0, 2.0).unwrap();
+    let snap = tracker.state_snapshot();
+
+    assert_eq!(snap.total_gas_spent_wei, "1000000000000000000");
+    assert_eq!(snap.successful_arbs, 1);
+    assert_eq!(snap.reverted_arbs, 3);
+    assert_eq!(snap.total_submissions, 4);
+    assert!((snap.budget_remaining_usd - 23.0).abs() < 0.0001);
+    assert!((tracker.budget_remaining_usd() - 23.0).abs() < 0.0001);
 }
 
 // ─── Test 7 ──────────────────────────────────────────────────────────────────

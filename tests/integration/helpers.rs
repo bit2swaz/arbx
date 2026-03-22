@@ -15,7 +15,8 @@ use async_trait::async_trait;
 
 use arbx_common::{
     config::{
-        Config, ExecutionConfig, NetworkConfig, ObservabilityConfig, PoolsConfig, StrategyConfig,
+        BudgetConfig, Config, ExecutionConfig, NetworkConfig, ObservabilityConfig, PoolsConfig,
+        StrategyConfig,
     },
     types::{ArbPath, DexKind, Opportunity, PoolState, SubmissionResult},
 };
@@ -76,6 +77,11 @@ pub fn make_test_config() -> Config {
             l2_gas_units: 500_000,
             receipt_timeout_secs: 30,
             dry_run: false,
+        },
+        budget: BudgetConfig {
+            total_usd: 27.0,
+            kill_at_usd: 2.0,
+            warn_at_usd: 5.0,
         },
         observability: ObservabilityConfig {
             log_level: "debug".to_owned(),

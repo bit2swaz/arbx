@@ -1,7 +1,7 @@
 //! Mini-Phase 6.2 — PnL Tracker with Persistence Tests.
 //!
 //! Tracks the bot's running profit-and-loss, cumulative gas spend, and the
-//! $60 operating budget across restarts. All state is persisted to a JSON
+//! configured operating budget across restarts. All state is persisted to a JSON
 //! file via an atomic write (write to `{path}.tmp` → rename) so the file is
 //! never left in a partially-written state.
 
@@ -74,6 +74,8 @@ pub struct PnlTracker {
     state: Arc<Mutex<PnlState>>,
     file_path: String,
     initial_budget_usd: f64,
+    warn_at_usd: f64,
+    kill_at_usd: f64,
 }
 
 impl PnlTracker {
@@ -83,6 +85,16 @@ impl PnlTracker {
     /// from it. Otherwise a fresh state is initialised with `budget_usd` as
     /// the starting budget.
     pub fn new(file_path: String, budget_usd: f64) -> anyhow::Result<Self> {
+        Self::with_thresholds(file_path, budget_usd, 5.0, 0.10)
+    }
+
+    /// Create a new tracker with explicit warning and kill thresholds.
+    pub fn with_thresholds(
+        file_path: String,
+        budget_usd: f64,
+        warn_at_usd: f64,
+        kill_at_usd: f64,
+    ) -> anyhow::Result<Self> {
         let state = if std::path::Path::new(&file_path).exists() {
             let json = std::fs::read_to_string(&file_path)
                 .with_context(|| format!("read PnL state from {file_path}"))?;
@@ -102,6 +114,8 @@ impl PnlTracker {
             state: Arc::new(Mutex::new(state)),
             file_path,
             initial_budget_usd: budget_usd,
+            warn_at_usd,
+            kill_at_usd,
         })
     }
 
@@ -150,27 +164,75 @@ impl PnlTracker {
             st.last_updated_ms = now_ms();
         }
 
+        let snapshot = self.state_snapshot();
         info!(
+            warn_at_usd = self.warn_at_usd,
+            kill_at_usd = self.kill_at_usd,
             "PnL updated: submissions={} budget_remaining=${:.4}",
-            self.state.lock().unwrap().total_submissions,
-            self.state.lock().unwrap().budget_remaining_usd,
+            snapshot.total_submissions,
+            snapshot.budget_remaining_usd,
         );
+
+        if self.is_budget_exhausted() {
+            info!(
+                event = "budget_exhausted",
+                budget_remaining_usd = snapshot.budget_remaining_usd,
+                kill_at_usd = self.kill_at_usd,
+                "budget exhaustion threshold reached"
+            );
+        } else if self.is_budget_low() {
+            info!(
+                event = "budget_warn",
+                budget_remaining_usd = snapshot.budget_remaining_usd,
+                warn_at_usd = self.warn_at_usd,
+                "budget warning threshold reached"
+            );
+        }
 
         self.save().await
     }
 
-    /// Returns `true` when `budget_remaining_usd` has fallen to $0.10 or below.
-    ///
-    /// A $0.10 safety margin is kept so the bot always has enough gas to
-    /// cleanly shut down.  The threshold is `< 0.101` rather than `<= 0.10`
-    /// to absorb the floating-point imprecision from wei-to-USD conversions
-    /// (e.g. `60.0 - 59.9 ≈ 0.10000000000000142` in IEEE 754).
+    /// Returns `true` when `budget_remaining_usd` has fallen to the configured
+    /// kill threshold or below.
     pub fn is_budget_exhausted(&self) -> bool {
         self.state
             .lock()
             .expect("PnlState mutex poisoned")
             .budget_remaining_usd
-            < 0.101
+            <= self.kill_at_usd + 0.000_001
+    }
+
+    /// Returns `true` when `budget_remaining_usd` has fallen to the configured
+    /// warning threshold or below.
+    pub fn is_budget_low(&self) -> bool {
+        self.state
+            .lock()
+            .expect("PnlState mutex poisoned")
+            .budget_remaining_usd
+            <= self.warn_at_usd + 0.000_001
+    }
+
+    /// Returns the configured warning threshold in USD.
+    pub fn warn_at_usd(&self) -> f64 {
+        self.warn_at_usd
+    }
+
+    /// Returns the configured kill threshold in USD.
+    pub fn kill_at_usd(&self) -> f64 {
+        self.kill_at_usd
+    }
+
+    /// Returns the remaining execution budget in USD.
+    pub fn budget_remaining_usd(&self) -> f64 {
+        self.state
+            .lock()
+            .expect("PnlState mutex poisoned")
+            .budget_remaining_usd
+    }
+
+    /// Returns the initial execution budget in USD.
+    pub fn initial_budget_usd(&self) -> f64 {
+        self.initial_budget_usd
     }
 
     /// Returns a human-readable one-line summary for logging.
@@ -531,5 +593,41 @@ mod tests {
             summary.contains("budget_remaining") || summary.to_lowercase().contains("budget"),
             "summary must mention budget remaining"
         );
+    }
+
+    #[tokio::test]
+    async fn test_budget_low_threshold_custom_warning() {
+        let (_dir, path) = temp_path();
+        let tracker = PnlTracker::with_thresholds(path, 27.0, 5.0, 2.0).unwrap();
+
+        let gas_wei: u128 = 23_000_000_000_000_000_000;
+        tracker
+            .record_submission(&make_revert(gas_wei), 1.0)
+            .await
+            .unwrap();
+
+        assert!(tracker.is_budget_low(), "budget should be in warning range");
+        assert!(
+            !tracker.is_budget_exhausted(),
+            "budget should not be exhausted above kill threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_budget_custom_kill_threshold() {
+        let (_dir, path) = temp_path();
+        let tracker = PnlTracker::with_thresholds(path, 27.0, 5.0, 2.0).unwrap();
+
+        let gas_wei: u128 = 25_000_000_000_000_000_000;
+        tracker
+            .record_submission(&make_revert(gas_wei), 1.0)
+            .await
+            .unwrap();
+
+        assert!(
+            tracker.is_budget_exhausted(),
+            "budget should hit custom kill threshold"
+        );
+        assert!((tracker.budget_remaining_usd() - 2.0).abs() < 0.01);
     }
 }

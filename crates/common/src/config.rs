@@ -18,7 +18,27 @@ pub struct Config {
     pub strategy: StrategyConfig,
     pub pools: PoolsConfig,
     pub execution: ExecutionConfig,
+    #[serde(default)]
+    pub budget: BudgetConfig,
     pub observability: ObservabilityConfig,
+}
+
+/// `[budget]` section.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BudgetConfig {
+    pub total_usd: f64,
+    pub kill_at_usd: f64,
+    pub warn_at_usd: f64,
+}
+
+impl Default for BudgetConfig {
+    fn default() -> Self {
+        Self {
+            total_usd: 60.0,
+            kill_at_usd: 0.10,
+            warn_at_usd: 5.0,
+        }
+    }
 }
 
 /// `[network]` section.
@@ -192,6 +212,11 @@ max_concurrent_simulations = 10
 gas_estimate_buffer        = 1.2
 node_interface_address     = "0x00000000000000000000000000000000000000C8"
 
+[budget]
+total_usd      = 60.0
+kill_at_usd    = 0.10
+warn_at_usd    = 5.0
+
 [observability]
 log_level    = "info"
 metrics_port = 9090
@@ -283,5 +308,25 @@ metrics_port = 9090
     fn test_chain_id_arbitrum() {
         let cfg = Config::load_str(VALID_CONFIG).expect("valid config must load");
         assert_eq!(cfg.network.chain_id, 42161);
+    }
+
+    #[test]
+    fn test_budget_section_parses() {
+        let cfg = Config::load_str(VALID_CONFIG).expect("valid config must load");
+        assert!((cfg.budget.total_usd - 60.0).abs() < 1e-9);
+        assert!((cfg.budget.kill_at_usd - 0.10).abs() < 1e-9);
+        assert!((cfg.budget.warn_at_usd - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_budget_defaults_when_missing_section() {
+        let config_without_budget = VALID_CONFIG.replace(
+            "\n[budget]\ntotal_usd      = 60.0\nkill_at_usd    = 0.10\nwarn_at_usd    = 5.0\n",
+            "\n",
+        );
+        let cfg = Config::load_str(&config_without_budget).expect("config must load");
+        assert!((cfg.budget.total_usd - 60.0).abs() < 1e-9);
+        assert!((cfg.budget.kill_at_usd - 0.10).abs() < 1e-9);
+        assert!((cfg.budget.warn_at_usd - 5.0).abs() < 1e-9);
     }
 }

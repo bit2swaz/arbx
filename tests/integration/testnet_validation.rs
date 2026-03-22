@@ -108,7 +108,7 @@ async fn testnet_full_pipeline_smoke_test() {
             .as_secs()
     );
     let pnl =
-        Arc::new(PnlTracker::new(pnl_path.clone(), 0.0).expect("PnlTracker::new must not fail"));
+        Arc::new(PnlTracker::new(pnl_path.clone(), 1.0).expect("PnlTracker::new must not fail"));
 
     // ── Channels ──────────────────────────────────────────────────────────
     let (swap_tx, mut swap_rx) = mpsc::channel::<DetectedSwap>(1_024);

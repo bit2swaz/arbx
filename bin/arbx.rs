@@ -290,15 +290,23 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
     // ── 4. Create PnlTracker ──────────────────────────────────────────────
     let pnl_file =
         std::env::var("ARBX_PNL_FILE").unwrap_or_else(|_| "arbx_pnl_state.json".to_owned());
-    let initial_budget_usd: f64 = std::env::var("ARBX_BUDGET_USD")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60.0);
+    let initial_budget_usd = config.budget.total_usd;
     let pnl = Arc::new(
-        PnlTracker::new(pnl_file.clone(), initial_budget_usd)
-            .context("failed to initialise PnlTracker")?,
+        PnlTracker::with_thresholds(
+            pnl_file.clone(),
+            initial_budget_usd,
+            config.budget.warn_at_usd,
+            config.budget.kill_at_usd,
+        )
+        .context("failed to initialise PnlTracker")?,
     );
-    info!(pnl_file, initial_budget_usd, "PnlTracker initialised");
+    info!(
+        pnl_file,
+        initial_budget_usd,
+        warn_at_usd = config.budget.warn_at_usd,
+        kill_at_usd = config.budget.kill_at_usd,
+        "PnlTracker initialised"
+    );
 
     // ── 5. Channels ───────────────────────────────────────────────────────
     let (swap_tx, swap_rx) = mpsc::channel::<DetectedSwap>(1_024);
@@ -648,7 +656,9 @@ async fn budget_watchdog(pnl: Arc<PnlTracker>) -> anyhow::Result<()> {
         if pnl.is_budget_exhausted() {
             let snap = pnl.state_snapshot();
             error!(
+                event = "budget_exhausted",
                 budget_remaining_usd = snap.budget_remaining_usd,
+                kill_at_usd = pnl.kill_at_usd(),
                 summary = %pnl.summary(),
                 "BUDGET EXHAUSTED — initiating shutdown",
             );
@@ -656,6 +666,16 @@ async fn budget_watchdog(pnl: Arc<PnlTracker>) -> anyhow::Result<()> {
                 "operating budget exhausted (${:.4} remaining)",
                 snap.budget_remaining_usd
             ));
+        }
+        if pnl.is_budget_low() {
+            let snap = pnl.state_snapshot();
+            warn!(
+                event = "budget_warn",
+                budget_remaining_usd = snap.budget_remaining_usd,
+                warn_at_usd = pnl.warn_at_usd(),
+                summary = %pnl.summary(),
+                "budget low warning threshold reached"
+            );
         }
         info!(summary = %pnl.summary(), "budget watchdog: OK");
     }
