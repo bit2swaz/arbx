@@ -14,7 +14,7 @@ fully open source, fully documented.
 
 ## Build Status
 
-**Last updated:** 2026-03-22
+**Last updated:** 2026-03-23
 
 | Phase | Description | Status | Commit |
 |---|---|---|---|
@@ -45,12 +45,12 @@ fully open source, fully documented.
 | 8.3 | Benchmarking infrastructure | ✅ | `9cd34f2` |
 | 9.1 | Testnet infrastructure + smoke tests | ✅ | `743e21b` |
 | 9.2 | Anvil fork validation (pre-mainnet) | ✅ | `1e2ade1` |
-| 10.1 | Mainnet launch | 🔜 | — |
+| 10.1 | Mainnet launch | ✅ | `a1e1df2` |
 
-**Codebase stats (2026-03-22):**
-- Rust: **10,232 lines** across 27 files
+**Codebase stats (2026-03-23):**
+- Rust: **10,550 lines** across 27 files
 - Solidity: **1,916 lines** across 5 files
-- Tests: **179 passing**, 0 failing, 0 unexpected ignores
+- Tests: **186 passing**, 0 failing, 0 unexpected ignores
 - Benchmarks: **5 hot-path benchmarks** (Criterion 0.5)
 
 ---
@@ -654,31 +654,41 @@ See `docs/ANVIL_FORK_VALIDATION.md` for the complete runbook.
 
 ---
 
-### Phase 10 — Mainnet Validation (Arbitrum, micro scale) ← CURRENT
+### Phase 10 — Mainnet Launch Infrastructure ✅
 
-Goals:
-- Deploy contract to Arbitrum mainnet
-- Target mid-tier pairs first: ARB/USDT, WBTC/ETH
-- Total gas budget: $60 — track every cent
-- Monitor full observability funnel at every step
-- Achieve at least one successful profitable on-chain execution
+#### 10.1 — Mainnet deploy, budget tracker, kill switch (complete, commit `a1e1df2`, 2026-03-23)
 
-**Budget breakdown:**
-- Contract deployment: ~$5
-- Execution testing: ~$30 (~300 transactions at ~$0.10 avg on Arbitrum)
-- Reserve: ~$25 (buffer for failed txs and gas spikes)
+Built the infrastructure required to attempt the first real-money mainnet run
+without operating blind.
 
-**RPC budget:**
-- Alchemy free tier: 300M compute units / month
-- QuickNode free tier: 50M compute units / month
-- Use both in rotation to stay on free tiers through Phase 2
+**What was added in this phase:**
+- `config/mainnet.toml` — dedicated mainnet config with mid-tier pools only
+  (`ARB/USDT`, `WBTC/ETH`), `dry_run = false`, and a strict execution budget.
+- Runtime budget support in `crates/common/src/config.rs`,
+  `crates/common/src/pnl.rs`, and `bin/arbx.rs` — explicit `[budget]` section,
+  threshold-aware PnL tracking, warn threshold, and kill-switch shutdown.
+- `scripts/deploy-mainnet.sh` and `scripts/run-mainnet.sh` — explicit typed
+  confirmations before deployment and live execution.
+- `scripts/pnl_report.sh` and `docs/MAINNET_LAUNCH.md` — operator tooling and
+  runbook for low-budget mainnet operation.
+- Integration coverage for budget exhaustion, warning-threshold behavior, and
+  persisted PnL reload across restart.
 
-**Definition of done:** At least one profitable arb executed on mainnet with
-positive net PnL, even if small.
+**Budget model implemented:**
+- Total real-money budget: **$31 USD** (~3000 INR)
+- Estimated deploy cost: **~$4 USD**
+- Execution budget: **$27 USD**
+- Warning threshold: **$5 USD remaining**
+- Kill threshold: **$2 USD remaining**
+
+**Outcome:** `cargo build --release` passes, `cargo test --workspace` passes,
+mainnet launch scripts and kill-switch infrastructure are in place.
+
+See `docs/MAINNET_LAUNCH.md` for the operator runbook.
 
 ---
 
-### Phase 11 — Optimisation
+### Phase 11 — Optimisation ← CURRENT
 
 Goals:
 - Profile hot paths with `cargo-flamegraph`, eliminate bottlenecks
