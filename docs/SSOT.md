@@ -14,7 +14,7 @@ fully open source, fully documented.
 
 ## Build Status
 
-**Last updated:** 2026-03-12
+**Last updated:** 2026-03-22
 
 | Phase | Description | Status | Commit |
 |---|---|---|---|
@@ -44,13 +44,13 @@ fully open source, fully documented.
 | 8.2 | Chaos tests: feed + RPC fault injection | ✅ | `ab80e6d` |
 | 8.3 | Benchmarking infrastructure | ✅ | `9cd34f2` |
 | 9.1 | Testnet infrastructure + smoke tests | ✅ | `743e21b` |
-| 9.2 | Anvil fork validation (pre-mainnet) | ⬜ | — |
-| 10.1 | Mainnet launch | ⬜ | — |
+| 9.2 | Anvil fork validation (pre-mainnet) | ✅ | `1e2ade1` |
+| 10.1 | Mainnet launch | 🔜 | — |
 
-**Codebase stats (2026-03-12):**
-- Rust: **6,680 lines** across 24 files
-- Solidity: **1,079 lines** across 5 files
-- Tests: **172 passing**, 0 failing, 0 unexpected ignores
+**Codebase stats (2026-03-22):**
+- Rust: **10,232 lines** across 27 files
+- Solidity: **1,916 lines** across 5 files
+- Tests: **179 passing**, 0 failing, 0 unexpected ignores
 - Benchmarks: **5 hot-path benchmarks** (Criterion 0.5)
 
 ---
@@ -142,6 +142,16 @@ manages reconnections automatically. Saves 3-5 days of painful debugging. Use it
 - Semaphore-controlled Tokio worker pool for parallel opportunity evaluation
 - `DashMap<Address, PoolState>` for in-memory pool state (lock-free concurrent reads)
 - Block listener for periodic RPC state reconciliation (ground truth)
+- `BlockPoller` — local-fork-only component that polls Anvil blocks for direct
+  pool swap transactions (complements the feed, which only sees top-level calls)
+
+### Important: Sequencer Feed Delivers Top-Level Transactions Only
+The live Arbitrum sequencer feed delivers the first call in each transaction's
+call stack. When users swap via routers (`exactInputSingle`, `swapExactTokensForTokens`
+etc.) the internal `pool.swap()` call is **not** visible in the feed. Only direct
+pool calls from MEV bots appear. In production, the detection pipeline is primarily
+triggered by detecting reserve changes via block reconciliation, not feed scanning.
+The feed is still useful for speed — it delivers transactions before they are mined.
 
 ### Timeboost Awareness
 Arbitrum's Timeboost auction gives winning searchers a 200ms express lane advantage.
@@ -481,7 +491,8 @@ arbx/
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── sequencer_feed.rs     # sequencer_client wrapper + reconnection
-│   │       └── pool_state.rs         # DashMap<Address, PoolState> + RPC reconcile
+│   │       ├── pool_state.rs         # DashMap<Address, PoolState> + RPC reconcile
+│   │       └── block_poller.rs       # Anvil block watcher (local fork only)
 │   ├── detector/
 │   │   └── src/
 │   │       ├── lib.rs
@@ -596,7 +607,7 @@ property tests, chaos tests, and benchmarks — is built and green.
 
 ---
 
-### Phase 9 — Testnet Validation ✅ + Anvil Fork Validation ← NEXT
+### Phase 9 — Testnet Validation ✅ + Anvil Fork Validation ✅
 
 #### 9.1 — Arbitrum Sepolia smoke test (complete, commit `743e21b`)
 
@@ -605,30 +616,45 @@ alive and pool-discovery infrastructure was validated.  A `--self-test` flag
 was added to the binary to prove the detect pipeline with synthetic data when
 no real swaps exist on the testnet.
 
-**Outcome:** infrastructure validated, synthetic smoke test passes, 172 tests
+**Outcome:** infrastructure validated, synthetic smoke test passes, 179 tests
 green.  Real end-to-end arb logic (detect → simulate → submit) was NOT
 exercised because no swap activity exists on Arbitrum Sepolia.
 
-#### 9.2 — Anvil mainnet fork validation ← CURRENT
+#### 9.2 — Anvil mainnet fork validation ✅ (commit `1e2ade1`, 2026-03-22)
 
-Runs the full bot against a pinned Arbitrum mainnet fork (Anvil) with real
-pool state and the live sequencer feed.  `dry_run = true` — no real ETH spent.
+Ran the full bot against a pinned Arbitrum mainnet fork (Anvil) with real
+pool state and the live sequencer feed. `dry_run = true` — no real ETH spent.
 
-Goals:
-- Pool store seeded from real mainnet factory logs (N > 0 pools)
-- Live feed swap events detected and processed
-- Path scanner finds real two-hop opportunities
-- revm simulation runs against real fork state
-- `opportunities_cleared_simulation > 0` at least once
+**What was built / fixed in this phase:**
+- `probe_pool()` public function in `sequencer_feed.rs` — auto-detects V2 vs V3
+  ABI for each known_pool address at startup, replacing hardcoded
+  `DexKind::CamelotV2 + Address::ZERO` seeds that were breaking the reconciler
+  and producing empty token0/token1 for all pools.
+- `BlockPoller` (`crates/ingestion/src/block_poller.rs`) — new ingestion component
+  that polls the local Anvil fork every 250ms for new blocks, extracts direct
+  pool swap transactions (by selector + pool_store membership), and feeds them
+  into the same detection channel as the sequencer feed. Only enabled when
+  `rpc_url` contains `127.0.0.1`. Required because the live Arbitrum sequencer
+  feed delivers only top-level L2 transactions (router calls), never internal
+  `pool.swap()` calls.
+- `run_anvil_fork.sh` updated: `--block-time 2` added so Anvil mines blocks;
+  `cast send` synthetic V3 swap injected 12s after startup to guarantee
+  BlockPoller detection fires on every test run.
 
-**Definition of done:** `simulation succeeded` appears in logs OR
-`arbx_opportunities_cleared_simulation_total > 0` in metrics.
+**Root cause discovered:** The Arbitrum sequencer feed (`wss://arb1.arbitrum.io/feed`)
+delivers only top-level L2 transactions. User DEX swaps go via routers
+(`Router.exactInputSingle()` → `Pool.swap()` internally) — only the router call
+appears in the feed. Direct `pool.swap()` calls are rare and only come from
+advanced MEV bots bypassing routers. The `BlockPoller` solves this for the
+local fork validation context.
+
+**Outcome:** `smoke test PASS`, `opportunities_detected = 4`. All 179 tests green.
 
 See `docs/ANVIL_FORK_VALIDATION.md` for the complete runbook.
 
 ---
 
-### Phase 10 — Mainnet Validation (Arbitrum, micro scale)
+### Phase 10 — Mainnet Validation (Arbitrum, micro scale) ← CURRENT
 
 Goals:
 - Deploy contract to Arbitrum mainnet

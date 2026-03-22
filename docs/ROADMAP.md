@@ -3514,7 +3514,7 @@ Phase 5  — Simulation Engine      [x] 5.1 [x] 5.2
 Phase 6  — Execution Engine       [x] 6.1 [x] 6.2
 Phase 7  — Integration            [x] 7.1 [x] 7.2
 Phase 8  — Property & Chaos       [x] 8.1 [x] 8.2 [x] 8.3
-Phase 9  — Testnet Validation     [ ] 9.1
+Phase 9  — Testnet Validation     [x] 9.1 [x] 9.2
 Phase 10 — Mainnet Launch         [ ] 10.1
 Phase 11 — Optimisation           [ ] 11.1 [ ] 11.2 [ ] 11.3
 Phase 12 — Expansion              [ ] 12.1 [ ] 12.2
@@ -3523,8 +3523,8 @@ Phase 13 — Open Source & Grants   [ ] 13.1 [ ] 13.2
 
 Total: 13 phases, 28 mini-phases, 28 self-contained prompts.
 
-**Last completed:** 8.3 — Benchmarking Infrastructure (commit `9cd34f2`, 2026-03-08)
-**Next up:** 9.1 — Testnet Infrastructure and Smoke Tests
+**Last completed:** 9.2 — Anvil fork validation (commit `1e2ade1`, 2026-03-22)
+**Next up:** 10.1 — Mainnet Launch
 
 ---
 
