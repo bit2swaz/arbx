@@ -48,6 +48,7 @@ use arbx_detector::{
 };
 use arbx_executor::submitter::{AlloyTransactionSender, TransactionSubmitter};
 use arbx_ingestion::{
+    block_poller::BlockPoller,
     pool_seeder,
     pool_state::PoolStateStore,
     reconciler::{AlloyReserveFetcher, BlockReconciler},
@@ -248,25 +249,34 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
         info!(seeded, "PoolStateStore bootstrapped from factory logs");
     }
 
-    // (b) Seed any explicitly-configured known_pools (testnet / manual override)
+    // (b) Seed any explicitly-configured known_pools (testnet / manual override).
+    //     Probe each address on-chain to discover the real token0/token1 and
+    //     DexKind so the PathScanner can build valid two-hop routes.
     {
-        use arbx_common::types::{DexKind, PoolState};
+        use arbx_ingestion::sequencer_feed::probe_pool;
         let mut known_seeded = 0usize;
         for addr_str in &config.pools.known_pools {
             match addr_str.parse::<alloy::primitives::Address>() {
-                Ok(addr) => {
-                    pool_store.upsert(PoolState {
-                        address: addr,
-                        token0: alloy::primitives::Address::ZERO,
-                        token1: alloy::primitives::Address::ZERO,
-                        reserve0: alloy::primitives::U256::ZERO,
-                        reserve1: alloy::primitives::U256::ZERO,
-                        fee_tier: 300,
-                        last_updated_block: 0,
-                        dex: DexKind::CamelotV2,
-                    });
-                    known_seeded += 1;
-                }
+                Ok(addr) => match probe_pool(addr, &provider).await {
+                    Some(pool_state) => {
+                        tracing::info!(
+                            address = %addr,
+                            token0  = %pool_state.token0,
+                            token1  = %pool_state.token1,
+                            dex     = ?pool_state.dex,
+                            fee_tier = pool_state.fee_tier,
+                            "known_pool probed and registered",
+                        );
+                        pool_store.upsert(pool_state);
+                        known_seeded += 1;
+                    }
+                    None => {
+                        tracing::warn!(
+                            address = %addr,
+                            "known_pool probe failed — address is not a recognised V2/V3 pool; skipping",
+                        );
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(address = %addr_str, error = %e, "invalid known_pool address — skipping");
                 }
@@ -347,10 +357,25 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
         feed_url: config.network.sequencer_feed_url.clone(),
         ..FeedConfig::default()
     };
-    let feed_mgr = SequencerFeedManager::new(feed_config, pool_store.clone(), swap_tx)
+    let feed_mgr = SequencerFeedManager::new(feed_config, pool_store.clone(), swap_tx.clone())
         .with_provider(Arc::clone(&provider));
     let handle_feed: JoinHandle<anyhow::Result<()>> =
         tokio::spawn(async move { feed_mgr.run().await });
+
+    // (a2) Block poller — for local Anvil forks: watches the fork RPC for new
+    //      blocks and routes direct pool swap transactions into the pipeline.
+    //      Only enabled when rpc_url points to 127.0.0.1 (local Anvil fork).
+    let handle_block_poller: Option<JoinHandle<anyhow::Result<()>>> =
+        if config.network.rpc_url.contains("127.0.0.1") {
+            info!("BlockPoller enabled — watching local Anvil fork for swap transactions");
+            let poller = BlockPoller::new(Arc::clone(&provider), pool_store.clone(), swap_tx);
+            Some(tokio::spawn(async move { poller.run().await }))
+        } else {
+            // In the live-feed path the channel is kept open by the feed_mgr clone.
+            // We drop the original here so the channel closes when feed_mgr drops it.
+            drop(swap_tx);
+            None
+        };
 
     // (b) Block reconciler — keeps PoolStateStore in sync with on-chain state
     let reconciler = BlockReconciler::new(
@@ -397,25 +422,41 @@ async fn run(config: Config, dry_run: bool) -> anyhow::Result<()> {
         tokio::spawn(budget_watchdog(pnl_w))
     };
 
-    info!("arbx pipeline fully running — 5 supervised tasks active");
+    let task_count = if handle_block_poller.is_some() { 6 } else { 5 };
+    info!("arbx pipeline fully running — {task_count} supervised tasks active");
 
     // ── 9. Stash abort handles before moving JoinHandles into select! ─────
-    let abort_handles = [
+    let mut abort_handles = vec![
         handle_feed.abort_handle(),
         handle_reconciler.abort_handle(),
         handle_detection.abort_handle(),
         handle_execution.abort_handle(),
         handle_watchdog.abort_handle(),
     ];
+    if let Some(ref h) = handle_block_poller {
+        abort_handles.push(h.abort_handle());
+    }
 
     // ── 10. Wait for the first exit or an OS signal ───────────────────────
-    let shutdown_reason = tokio::select! {
-        res = handle_feed       => format!("sequencer feed task exited: {res:?}"),
-        res = handle_reconciler => format!("block reconciler task exited: {res:?}"),
-        res = handle_detection  => format!("detection loop task exited: {res:?}"),
-        res = handle_execution  => format!("execution loop task exited: {res:?}"),
-        res = handle_watchdog   => format!("budget watchdog triggered: {res:?}"),
-        _   = shutdown_signal() => "received SIGTERM or SIGINT".to_owned(),
+    let shutdown_reason = if let Some(handle_poller) = handle_block_poller {
+        tokio::select! {
+            res = handle_feed       => format!("sequencer feed task exited: {res:?}"),
+            res = handle_reconciler => format!("block reconciler task exited: {res:?}"),
+            res = handle_detection  => format!("detection loop task exited: {res:?}"),
+            res = handle_execution  => format!("execution loop task exited: {res:?}"),
+            res = handle_watchdog   => format!("budget watchdog triggered: {res:?}"),
+            res = handle_poller     => format!("block poller task exited: {res:?}"),
+            _   = shutdown_signal() => "received SIGTERM or SIGINT".to_owned(),
+        }
+    } else {
+        tokio::select! {
+            res = handle_feed       => format!("sequencer feed task exited: {res:?}"),
+            res = handle_reconciler => format!("block reconciler task exited: {res:?}"),
+            res = handle_detection  => format!("detection loop task exited: {res:?}"),
+            res = handle_execution  => format!("execution loop task exited: {res:?}"),
+            res = handle_watchdog   => format!("budget watchdog triggered: {res:?}"),
+            _   = shutdown_signal() => "received SIGTERM or SIGINT".to_owned(),
+        }
     };
 
     warn!(reason = %shutdown_reason, "graceful shutdown initiated");

@@ -407,6 +407,26 @@ impl SequencerFeedManager {
     }
 }
 
+// ─── Public probe helper ──────────────────────────────────────────────────────
+
+/// Probes `addr` on-chain to discover its token pair, fee tier, and DEX kind.
+///
+/// Tries UniswapV3 first (`token0/token1/fee`); falls back to V2-style
+/// (`token0/token1`).  Returns `None` when the address is not a recognised
+/// pool (or RPC calls fail).
+///
+/// The returned [`PoolState`] has zero reserves; the block reconciler will
+/// hydrate them on the next pass.
+pub async fn probe_pool(
+    addr: Address,
+    provider: &Arc<RootProvider<Ethereum>>,
+) -> Option<PoolState> {
+    if let Some(pool) = probe_as_v3(addr, provider).await {
+        return Some(pool);
+    }
+    probe_as_v2(addr, provider).await
+}
+
 // ─── Private Helpers ─────────────────────────────────────────────────────────
 
 /// Attempts to read V3 pool metadata from `addr`.

@@ -139,6 +139,7 @@ anvil \
     --accounts      10 \
     --balance       10000 \
     --gas-limit     30000000 \
+    --block-time    2 \
     --no-rate-limit \
     --silent \
     &
@@ -217,6 +218,38 @@ echo "  State  : $ANVIL_RPC (fork at block $FORK_BLOCK)"
 echo ""
 "$ARBX_BIN" --config "$TEMP_CONFIG" 2>&1 | tee "$LOG_FILE" &
 ARBX_PID=$!
+
+# ── Inject synthetic V3 swap for BlockPoller detection ───────────────────────
+# The BlockPoller polls the local Anvil fork for new blocks.  With --block-time 2
+# Anvil mines every 2 s, so this cast send will appear in the next mined block.
+# Selector 0x128acb08 = IUniswapV3Pool.swap(recipient,zeroForOne,amountSpecified,sqrtPriceLimitX96,data)
+# Target: WETH/USDC.e V3 0.05% pool — 0xC31E54c7a869B9FcBEcc14363CF510d1c41fa443
+# Anvil account 0 private key (well-known test key, pre-funded by --balance 10000)
+ANVIL_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+ANVIL_ACCT0="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+V3_POOL="0xC31E54c7a869B9FcBEcc14363CF510d1c41fa443"
+yellow "Waiting 12 s for arbx reconciler to hydrate pool reserves before injecting swap..."
+sleep 12
+yellow "Injecting synthetic V3 swap into $V3_POOL for BlockPoller detection..."
+# Fund account 0 via anvil_setBalance (avoids trie-access issues for ETH balance check)
+cast rpc --rpc-url "$ANVIL_RPC" anvil_setBalance "$ANVIL_ACCT0" "0x21E19E0C9BAB2400000" >/dev/null 2>&1 || true
+# Build calldata: swap(recipient, zeroForOne=true, amountSpecified=1e15, sqrtPriceLimitX96=MIN+1, data="")
+# recipient: 20-byte padded to 32;  zeroForOne=true=1;  amountSpecified=1e15 wei (small);  sqrtPriceLimit=4295128740 (V3 MIN_SQRT_RATIO+1);  data=empty (offset+len)
+SWAP_DATA="0x128acb08"
+SWAP_DATA+="000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266"  # recipient
+SWAP_DATA+="0000000000000000000000000000000000000000000000000000000000000001"  # zeroForOne=true
+SWAP_DATA+="00000000000000000000000000000000000000000000000000038d7ea4c68000"  # amountSpecified=1e15
+SWAP_DATA+="0000000000000000000000000000000000000000000000000000000100000024"  # sqrtPriceLimitX96=4295128740
+SWAP_DATA+="00000000000000000000000000000000000000000000000000000000000000a0"  # data offset
+SWAP_DATA+="0000000000000000000000000000000000000000000000000000000000000000"  # data length=0
+cast send \
+    --rpc-url "$ANVIL_RPC" \
+    --private-key "$ANVIL_KEY" \
+    --gas-limit 500000 \
+    "$V3_POOL" \
+    "$SWAP_DATA" \
+    >/dev/null 2>&1 && green "Synthetic V3 swap injected — BlockPoller should detect it in the next mined block." \
+    || yellow "WARNING: cast send failed (pool may revert — BlockPoller still wired correctly)."
 
 # ── Run for the configured duration ──────────────────────────────────────────
 echo ""
