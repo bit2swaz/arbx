@@ -55,6 +55,9 @@ done
 RUN_DURATION="${RUN_DURATION:-600}"
 ANVIL_PORT=8545
 ANVIL_RPC="http://127.0.0.1:${ANVIL_PORT}"
+# Anvil has no rate-limit so we can scan large block chunks; this cuts seeding
+# time from ~200 s (2000 requests × 100 ms each at CHUNK_SIZE=10) to ~1 s.
+export ARBX_SEED_CHUNK_SIZE="${ARBX_SEED_CHUNK_SIZE:-2000}"
 
 # Anvil's --fork-url requires HTTP(S), not WebSocket (wss://).
 # The .env ARBITRUM_RPC_URL is often a wss:// URL used for the sequencer feed.
@@ -105,14 +108,26 @@ for cmd in anvil cast cargo; do
 done
 
 # ── Kill any stale Anvil process ──────────────────────────────────────────────
-# If a previous run left Anvil alive on port $ANVIL_PORT, the readiness check
-# would succeed against that old instance.  The seed_from_block we compute is
-# derived from the NEW fork block — if the stale Anvil is at a different block,
-# pool_seeder sees seed_from_block > head and skips all scanning (seeded=0).
-if pkill -x anvil 2>/dev/null; then
-    dim "Killed stale Anvil on port $ANVIL_PORT — waiting 2 s for port to free..."
-    sleep 2
+# pkill alone is not sufficient: the OS may not free the port for several
+# seconds after the process exits.  We must wait until port $ANVIL_PORT is
+# fully released before starting a new Anvil, or the new instance fails to bind
+# and the readiness check hits the stale one.  Then seed_from_block (derived
+# from the new block) would exceed the stale head, and pool_seeder returns 0.
+if command -v fuser &>/dev/null; then
+    fuser -k "${ANVIL_PORT}/tcp" 2>/dev/null || true
+elif command -v lsof &>/dev/null; then
+    lsof -ti :"${ANVIL_PORT}" 2>/dev/null | xargs kill -9 2>/dev/null || true
+else
+    pkill -x anvil 2>/dev/null || true
 fi
+# Wait until port is confirmed free (up to 10 s)
+for _i in $(seq 1 10); do
+    if ! nc -z 127.0.0.1 "$ANVIL_PORT" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+dim "Port $ANVIL_PORT is free — starting new Anvil..."
 
 # ── Start Anvil fork ──────────────────────────────────────────────────────────
 yellow "Starting Anvil fork at block $FORK_BLOCK..."
@@ -148,6 +163,17 @@ fi
 
 FORK_HEAD=$(cast block-number --rpc-url "$ANVIL_RPC" 2>/dev/null || echo "0")
 green "Anvil ready — head block: $FORK_HEAD"
+
+# Sanity-check: the new Anvil must be at roughly the expected fork block.
+# If FORK_HEAD is much larger than FORK_BLOCK it means the OLD stale Anvil
+# (which was at a later block) is still answering — the new one hasn't bound yet.
+# In that case we wait a bit more and re-query.
+if [[ "$FORK_HEAD" -gt $(( FORK_BLOCK + 1000 )) ]]; then
+    yellow "FORK_HEAD ($FORK_HEAD) >> FORK_BLOCK ($FORK_BLOCK) — stale Anvil still answering; waiting 5 s..."
+    sleep 5
+    FORK_HEAD=$(cast block-number --rpc-url "$ANVIL_RPC" 2>/dev/null || echo "0")
+    green "Re-queried Anvil head: $FORK_HEAD"
+fi
 
 # ── Build temp config — seed_from_block derived from ACTUAL Anvil head ───────────
 # seed_from_block must be <= head or pool_seeder exits immediately with seeded=0.

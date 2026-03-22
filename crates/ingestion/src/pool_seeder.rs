@@ -34,7 +34,17 @@ use crate::pool_state::PoolStateStore;
 /// Maximum blocks per `eth_getLogs` request.
 /// Alchemy free tier enforces a 10-block limit; paid tiers allow up to 10 000.
 /// Set conservatively so the seeder works on the free tier out of the box.
-const CHUNK_SIZE: u64 = 10;
+///
+/// For local Anvil this can be overridden with the `ARBX_SEED_CHUNK_SIZE`
+/// environment variable (e.g. `ARBX_SEED_CHUNK_SIZE=2000`).
+const CHUNK_SIZE_DEFAULT: u64 = 10;
+
+fn chunk_size() -> u64 {
+    std::env::var("ARBX_SEED_CHUNK_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(CHUNK_SIZE_DEFAULT)
+}
 
 // ─── Event topic keccak256 hashes ────────────────────────────────────────────
 
@@ -91,10 +101,11 @@ pub async fn seed_pools_from_factories(
         return 0;
     }
 
+    let cs = chunk_size();
     info!(
         from = seed_from_block,
         to = head,
-        chunk = CHUNK_SIZE,
+        chunk = cs,
         "scanning factory logs for pool seeds"
     );
 
@@ -193,8 +204,9 @@ async fn fetch_v3_pools(
     let mut pools = Vec::new();
     let mut start = from_block;
 
+    let cs = chunk_size();
     while start <= to_block {
-        let end = (start + CHUNK_SIZE - 1).min(to_block);
+        let end = (start + cs - 1).min(to_block);
 
         let filter = Filter::new()
             .address(factory)
@@ -291,9 +303,10 @@ async fn fetch_v2_pools(
 ) -> anyhow::Result<Vec<PoolState>> {
     let mut pools = Vec::new();
     let mut start = from_block;
+    let cs = chunk_size();
 
     while start <= to_block {
-        let end = (start + CHUNK_SIZE - 1).min(to_block);
+        let end = (start + cs - 1).min(to_block);
 
         let filter = Filter::new()
             .address(factory)
