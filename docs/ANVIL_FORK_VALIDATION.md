@@ -1,198 +1,179 @@
 # Anvil Fork Validation
 
-Pre-mainnet sanity check.  Runs the full bot against an Arbitrum mainnet
-fork (Anvil) with `dry_run = true` — no real ETH is ever spent.
+## Overview
 
-The fork provides **real pool state** (mainnet reserves at a pinned block).
-The live sequencer feed provides **real swap events** happening right now.
-Together they give the closest approximation to mainnet without financial risk.
+This runbook describes the Phase 9.2 validation path, running the full bot against a local Anvil fork of Arbitrum mainnet with `dry_run = true`.
 
----
+The goal is simple. Use real pool contracts, real reserve state, and the live Arbitrum sequencer feed, but avoid spending real money. That makes this the closest safe approximation to mainnet behavior before a live run.
+
+The fork validates three things at once:
+
+1. The bot can seed and reconcile real pool state.
+2. The live detection pipeline can react to swap activity.
+3. The simulator and execution path can run end to end in dry-run mode.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Anvil (local)                                              │
-│  Arbitrum mainnet fork at block 105_949_098                 │
-│  http://127.0.0.1:8545                                      │
-│                                                             │
-│  ← all eth_call / getLogs / state queries go here          │
-└─────────────────────────────────────────────────────────────┘
-             ↑                              ↑
-         pool seeder                  revm simulation
-         block reconciler             (uses fork RPC)
-             ↑
-┌─────────────────────────────────────────────────────────────┐
-│  Live Arbitrum Sequencer Feed                               │
-│  wss://arb1.arbitrum.io/feed                                │
-│                                                             │
-│  ← real mainnet swap events stream in                      │
-└─────────────────────────────────────────────────────────────┘
-             ↑
-         swap detection
-         path scanner
-         profit filter
-             ↓
-         [simulation] ← fork state (may be slightly stale — acceptable)
-             ↓
-         DRY RUN: log "would submit" — no tx broadcast
-```
+```mermaid
+flowchart TD
+    A[Live Arbitrum Sequencer Feed] --> B[SequencerFeedManager]
+    B --> C[DetectedSwap events]
+    C --> D[Detection and Profit Filter]
+    D --> E[revm Simulation]
+    E --> F[Dry-run decision]
 
----
+    G[Local Anvil Mainnet Fork] --> H[Pool Seeder]
+    G --> I[Block Reconciler]
+    G --> E
+    H --> J[PoolStateStore]
+    I --> J
+    J --> D
+
+    F --> K[Log result, no broadcast]
+```
 
 ## Prerequisites
 
-| Requirement | Check |
+| Requirement | How to verify |
 |---|---|
-| [Foundry](https://getfoundry.sh) installed | `anvil --version && cast --version` |
-| `ARBITRUM_RPC_URL` in `.env` | Alchemy / QuickNode Arbitrum mainnet URL |
-| `ARB_EXECUTOR_ADDRESS` in `.env` | Deployed contract (Sepolia deploy is fine) |
-| `PRIVATE_KEY` in `.env` | Any key — no real tx is sent |
-| arbx binary built | `cargo build --release --bin arbx` |
+| Foundry installed | `anvil --version && cast --version` |
+| Mainnet RPC URL configured | `ARBITRUM_RPC_URL` present in `.env` |
+| Executor address configured | `ARB_EXECUTOR_ADDRESS` present in `.env` |
+| Test key configured | `PRIVATE_KEY` present in `.env` |
+| Binary built successfully | `cargo build --release --bin arbx` |
 
----
+The private key used here does not need real funds because the run stays in dry-run mode.
 
-## Run
+## Running the Validation
+
+### 1. Make sure the helper scripts are executable
 
 ```bash
-# One-time setup
 chmod +x scripts/run_anvil_fork.sh scripts/anvil_smoke_test.sh
+```
 
-# Terminal 1 — start Anvil fork and run arbx for 10 minutes
+### 2. Start the fork run
+
+In terminal one:
+
+```bash
 ./scripts/run_anvil_fork.sh
+```
 
-# Terminal 2 — check metrics after ~2 minutes
+This script starts a local Anvil fork, boots `arbx` against `config/anvil_fork.toml`, and injects a synthetic direct pool swap so the detection path is guaranteed to fire.
+
+### 3. Check the metrics
+
+In terminal two:
+
+```bash
 ./scripts/anvil_smoke_test.sh
 ```
 
-Override options:
+### 4. Optional overrides
 
 ```bash
-# Use a different fork block
 FORK_BLOCK_NUMBER=106000000 ./scripts/run_anvil_fork.sh
-
-# Run for 20 minutes instead of 10
 RUN_DURATION=1200 ./scripts/run_anvil_fork.sh
-
-# Check metrics on a non-default port
 ./scripts/anvil_smoke_test.sh --url http://localhost:19090
 ```
 
----
+## What to Look for in Logs
 
-## What to look for in logs
+Check the active fork log file:
 
-Look at `logs/anvil_fork_<timestamp>.log` while the run is active:
+```bash
+tail -f logs/anvil_fork_*.log
+```
 
 | Log pattern | Meaning |
 |---|---|
-| `PoolStateStore bootstrapped ... seeded=N` | Factory scan worked; N pools found |
+| `PoolStateStore bootstrapped` | Factory scan completed and initial pools were seeded |
 | `sequencer feed connected` | Feed handshake succeeded |
-| `scanning N candidate two-hop path(s)` | Path scanner firing on real swaps |
-| `opportunity cleared profit threshold` | Profit filter passed |
-| `simulation succeeded` | **The real signal** — full arb logic validated |
-| `DRY RUN — would submit arb transaction` | Simulation passed, skipping broadcast |
-| `below profit threshold` | Opportunity found but not profitable enough |
-| `simulation failed` | Stale reserves or path no longer valid |
+| `scanning ... candidate two-hop path(s)` | Detection loop is evaluating real candidate routes |
+| `opportunity cleared profit threshold` | Raw route economics cleared the threshold gate |
+| `simulation succeeded` | The full path survived revm simulation |
+| `DRY RUN` | A route would have been submitted, but broadcast was intentionally skipped |
+| `simulation failed` | A route was checked and rejected by the simulator |
 
----
+The strongest signal in this phase is `simulation succeeded`. That proves the live detection path and the local fork simulator agree on a profitable route at that moment in state.
 
-## Definition of done
+## Definition of Done
 
-The Anvil fork validation is **complete** when at least one of the following
-appears in the logs or metrics within a 10-minute run:
+The Phase 9.2 fork validation is considered complete when at least one of these is true during a ten-minute run:
 
-| Signal | Where |
+| Signal | Where to check |
 |---|---|
-| `simulation succeeded` in logs | `logs/anvil_fork_*.log` |
-| `arbx_opportunities_cleared_simulation_total > 0` in metrics | `./scripts/anvil_smoke_test.sh` |
+| `simulation succeeded` appears in logs | `logs/anvil_fork_*.log` |
+| `opportunities_cleared_simulation` becomes non-zero | `./scripts/anvil_smoke_test.sh` |
 
-If **neither** appears after 10 minutes, the pipeline is still valid — it just
-means no profitable opportunity occurred at the fork block state during the run
-window.  Check the triage steps below before concluding there is a bug.
+If neither happens, that does not automatically mean the bot is broken. It can simply mean there was no profitable opportunity at the chosen fork block during the observation window.
 
----
+## Triage When Simulation Count Stays at Zero
 
-## Triage: simulation count stays 0
+Work through these checks in order.
 
-Work through these checks in order:
-
-### 1. Is the pool store populated?
+### 1. Confirm the pool store seeded correctly
 
 ```bash
 grep 'bootstrapped\|seeded' logs/anvil_fork_*.log
 ```
 
-Expected: `PoolStateStore bootstrapped ... seeded=N` with `N > 0`.
+You want to see a non-zero seed count.
 
-If `N = 0`: the factory scan found no pools in the window
-`seed_from_block` → fork block.  Try lowering `seed_from_block` in
-`config/anvil_fork.toml` (e.g. `105000000` to scan more history).
+If the count is zero, widen the historical factory-scan window by lowering `seed_from_block` in `config/anvil_fork.toml`.
 
-### 2. Are swaps being detected?
+### 2. Confirm swap activity is reaching the detector
 
 ```bash
 grep 'scanning\|DetectedSwap\|swap.*sel\|detected' logs/anvil_fork_*.log | head -20
 ```
 
-Expected: several lines per minute as mainnet swap activity flows in.
+If this stays quiet, inspect feed connectivity logs for reconnects or feed errors.
 
-If silent: the sequencer feed may have disconnected.  Look for
-`reconnecting` or `feed error` log lines.
-
-### 3. Are paths being found?
+### 3. Confirm paths are actually being built
 
 ```bash
 grep 'two-hop\|candidate path\|no two-hop' logs/anvil_fork_*.log | head -10
 ```
 
-If `no two-hop paths for pool` dominates: the swapped pools are not in
-the store.  The reconciler should fill them in over time via feed-first
-discovery — wait a few more minutes.
+If you mostly see `no two-hop paths for pool`, the relevant pools may not be present in the store yet. Give the feed-first discovery and reconciler more time.
 
-### 4. Is the profit threshold too high?
+### 4. Confirm the profit threshold is not too strict
 
-Check `config/anvil_fork.toml`:
+Relevant settings in `config/anvil_fork.toml`:
+
 ```toml
-min_profit_floor_usd = 0.01   # already very low
-max_gas_gwei         = 0.5    # Anvil inherits mainnet base fee
+min_profit_floor_usd = 0.01
+max_gas_gwei = 0.5
 ```
 
-If the fork block has high base fee, real gas cost may exceed the
-$0.01 floor even with `max_gas_gwei = 0.5`.  Try `max_gas_gwei = 1.0`
-and `min_profit_floor_usd = 0.001` for maximum permissiveness.
+If the chosen fork block has expensive gas conditions, try lowering the floor further and temporarily raising the maximum gas cap so more candidates reach simulation.
 
-### 5. Fork block is stale
+### 5. Remember that the fork can be stale relative to the live feed
 
-The sequencer feed delivers current mainnet swaps, but revm simulates
-against fork block state.  If a pool was created or had its reserves
-dramatically changed after the fork block, simulation may reject it.
-This is expected — it proves the simulation is working correctly, not
-that it is broken.
+The feed delivers current mainnet swap ordering, but simulation still runs against the selected fork state. If a pool changed materially after that fork point, simulation may reject routes that look promising from the live event stream.
 
----
+That is a valid outcome. It means the simulator is being conservative, which is exactly what you want before real-money submission.
 
-## Transitioning to Phase 10
+## Moving from Fork Validation to Mainnet
 
-Once `simulation succeeded` appears at least once:
+Once fork validation is satisfactory:
 
-1. Remove `dry_run = true` from `config/anvil_fork.toml` (or create
-   `config/mainnet.toml` based on `config/default.toml`)
-2. Confirm `ARB_EXECUTOR_ADDRESS` is deployed to Arbitrum mainnet
-3. Fund the executor with a small ETH amount for gas (~$5)
-4. Run with `--config config/mainnet.toml` (no `--dry-run`)
-5. Watch `arbx_transactions_succeeded_total` and `arbx_net_pnl_wei`
+1. Keep the fork runbook as a regression tool.
+2. Switch to `config/mainnet.toml` for real operation.
+3. Verify the deployed executor address is correct on Arbitrum mainnet.
+4. Fund the wallet with a small gas budget only.
+5. Use the explicit confirmation flow in `scripts/run-mainnet.sh`.
+6. Monitor `pnl_report.sh`, logs, and Prometheus metrics throughout the run.
 
-See `docs/ROADMAP.md` Phase 10 for the full mainnet launch checklist.
+For the live launch checklist, continue with `docs/MAINNET_LAUNCH.md`.
 
----
-
-## Files created in this phase
+## Files Used in This Phase
 
 | File | Purpose |
 |---|---|
-| `config/anvil_fork.toml` | Bot config pointing at local Anvil RPC |
-| `scripts/run_anvil_fork.sh` | Starts Anvil fork + funds executor + runs arbx |
-| `scripts/anvil_smoke_test.sh` | Checks Prometheus metrics during/after run |
-| `docs/ANVIL_FORK_VALIDATION.md` | This runbook |
+| `config/anvil_fork.toml` | Config for the local fork run |
+| `scripts/run_anvil_fork.sh` | Starts the fork and launches the bot |
+| `scripts/anvil_smoke_test.sh` | Checks metrics during the run |
+| `docs/ANVIL_FORK_VALIDATION.md` | This operational runbook |

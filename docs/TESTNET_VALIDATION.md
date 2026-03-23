@@ -1,203 +1,157 @@
-# arbx — Testnet Validation Guide
+# arbx Testnet Validation
 
-Phase 9.1: Run the complete bot on Arbitrum Sepolia. Validate the full observability
-funnel before any mainnet deployment.
+## Overview
 
----
+The original Phase 9 plan was to validate the full pipeline on Arbitrum Sepolia. In practice, Sepolia is a ghost chain for MEV work. The network is alive, but there is almost no useful DEX liquidity and almost no real swap flow worth backrunning.
 
-## Prerequisites
+Because of that, Phase 9 split into two useful validation tracks:
 
-| Item | How to get it |
-|---|---|
-| Arbitrum Sepolia RPC URL | Alchemy: [dashboard.alchemy.com](https://dashboard.alchemy.com) → New App → Arbitrum Sepolia |
-| Arbitrum Sepolia ETH | Faucet: [faucet.triangleplatform.com/arbitrum/sepolia](https://faucet.triangleplatform.com/arbitrum/sepolia) |
-| Arbiscan API key | [arbiscan.io/myapikey](https://arbiscan.io/myapikey) (free, needed for contract verification) |
-| Rust toolchain | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| Foundry | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+1. **Arbitrum Sepolia infrastructure validation**, to prove the bot could connect, seed state, and expose metrics.
+2. **Anvil mainnet fork validation**, to prove the real detection pipeline worked against mainnet pool state without spending real money.
 
----
+This document reflects what actually happened, not what the original plan hoped would happen.
 
-## Step 1 — Configure `.env`
+## What Was Validated
+
+| Component | Validated | Method |
+|---|---|---|
+| Sequencer feed connection | Yes | Live Arbitrum Sepolia |
+| Pool state seeding (640 pools) | Yes | Real factory scan |
+| Block reconciler | Yes | Live blocks |
+| Prometheus metrics | Yes | Smoke test script |
+| Swap detection | Yes | Synthetic injection via cast send |
+| Opportunity detection | Yes | 4 paths found on synthetic swap |
+| Profit simulation | No | No profitable opportunity at fork block |
+| Transaction submission | No | Dry run mode |
+
+The key result is that the pipeline from detection input to simulated decision-making was exercised under realistic conditions, even though no real profitable opportunity appeared during the validation window.
+
+## What Was Not Validated
+
+The full live cycle, detect a real profitable swap, simulate it successfully, submit it on-chain, and see it land profitably, has **not** been observed on real live market data yet.
+
+That sounds like a big gap, but it is acceptable at this stage for three reasons:
+
+1. The codebase already has strong unit, integration, property, fuzz, chaos, and fork coverage.
+2. The Anvil fork setup proved that the live detection path can feed the rest of the runtime using real mainnet state.
+3. Phase 10 added the missing operational safety rails, especially the budget tracker and kill switch, before any real-money run.
+
+In other words, Phase 9 did not prove profitability. It proved infrastructure readiness and detection-path correctness.
+
+## Running Testnet Validation
+
+The most useful validation path is the Anvil mainnet fork flow.
+
+### 1. Set up environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in your values:
+Fill in at least these values:
 
-```
+```text
+ARBITRUM_RPC_URL=https://arb-mainnet.g.alchemy.com/v2/YOUR_KEY
 ARBITRUM_SEPOLIA_RPC_URL=https://arb-sepolia.g.alchemy.com/v2/YOUR_KEY
-ARB_EXECUTOR_ADDRESS=0x0000000000000000000000000000000000000000   # filled after step 2
-PRIVATE_KEY=0xYOUR_THROWAWAY_TESTNET_PRIVATE_KEY
-ARBISCAN_API_KEY=YOUR_ARBISCAN_KEY
-BALANCER_VAULT=0xBA12222222228d8Ba445958a75a0704d566BF2C8
+ARB_EXECUTOR_ADDRESS=0xYOUR_DEPLOYED_CONTRACT
+PRIVATE_KEY=0xYOUR_TEST_KEY
 ```
 
-> **Use a throwaway key.** This key will be hot (in memory) and used to sign
-> testnet transactions. Never reuse it for mainnet funds.
-
----
-
-## Step 2 — Deploy ArbExecutor to Arbitrum Sepolia
+### 2. Build the binary
 
 ```bash
-./scripts/deploy-sepolia.sh
+cargo build --release --bin arbx
 ```
 
-The script will:
-1. Validate all env vars
-2. Run `forge script` against Arbitrum Sepolia
-3. Verify the contract on Arbiscan
-4. Write the deployed address to `contracts/deployments/421614.json`
+### 3. Start the fork validation run
 
-After deployment, copy the address into `.env`:
-
-```
-ARB_EXECUTOR_ADDRESS=0xYOUR_DEPLOYED_CONTRACT_ADDRESS
+```bash
+./scripts/run_anvil_fork.sh
 ```
 
----
+This script starts a local Anvil fork, runs the bot in dry-run mode, and injects a synthetic direct pool swap with `cast send` so the detection pipeline is guaranteed to fire during the session.
 
-## Step 3 — Fund the Deployer Wallet
+### 4. Check the smoke-test metrics
 
-Get Sepolia ETH to pay gas for test transactions:
+In a second terminal:
 
+```bash
+./scripts/anvil_smoke_test.sh
 ```
-https://faucet.triangleplatform.com/arbitrum/sepolia
+
+You should see the funnel move, including non-zero detections. In the recorded Phase 9.2 run, the smoke test passed and `opportunities_detected = 4`.
+
+### 5. Review the logs
+
+```bash
+tail -f logs/anvil_fork_*.log
 ```
 
-You need ~0.01 ETH for the deployment and a few test submissions.
+Look for these messages:
 
----
+- `PoolStateStore bootstrapped from factory logs`
+- `sequencer feed connected`
+- `scanning ... candidate two-hop path(s)`
+- `DRY RUN, would submit arb transaction`
+- `simulation failed`, if the path was not profitable at that block state
 
-## Step 4 — Run the Bot
+### 6. Shut down cleanly
+
+Press `Ctrl+C` in the bot terminal. The runtime persists PnL state and exits cleanly.
+
+## Running on Arbitrum Sepolia
+
+Arbitrum Sepolia is still useful for checking that the bot can start, connect, and expose metrics, but it is not a realistic MEV proving ground.
+
+You can still run it:
 
 ```bash
 ./scripts/run_sepolia.sh
-```
-
-Or in dry-run mode (no on-chain submissions, safest for initial validation):
-
-```bash
-./scripts/run_sepolia.sh --dry-run
-```
-
-The bot will:
-- Connect to `wss://sepolia-rollup.arbitrum.io/feed`
-- Start the pool state store (populated live from feed events)
-- Run the detection loop (two-hop path scanning)
-- Serve Prometheus metrics at `http://localhost:9090/metrics`
-- Log everything at `debug` level to `logs/sepolia_TIMESTAMP.log`
-
----
-
-## Step 5 — Validate the Funnel
-
-In a second terminal, after the bot has been running for **5 minutes**:
-
-```bash
 ./scripts/smoke_test.sh
 ```
 
-For continuous monitoring:
+What this proves:
 
-```bash
-watch -n 30 ./scripts/smoke_test.sh
-```
+- the sequencer feed connection works
+- the runtime starts cleanly
+- metrics are exposed
+- pool discovery and reconciliation code run
 
-Expected output after 5 minutes:
+What it does **not** reliably prove:
 
-```
-=== arbx Smoke Test ===
-Endpoint: http://localhost:9090/metrics
+- profitable opportunities exist
+- simulation will clear on real live opportunities
+- submission logic will be exercised meaningfully
 
---- Required (must be > 0 after 5 min) ---
-  PASS  opportunities_detected          →  1247
-  PASS  opportunities_cleared_threshold →  3
+To get real Sepolia validation, you would need to create the conditions yourself. In practice that means:
 
---- Informational (may be 0 on testnet — no real liquidity) ---
-  INFO  opportunities_cleared_simulation  →  0
-  INFO  transactions_submitted            →  0
-  INFO  transactions_succeeded            →  0
-  INFO  net_pnl_wei                       →  0
-  INFO  gas_spent_wei                     →  0
+1. Deploy your own test pools.
+2. Seed them with enough liquidity to create price movement.
+3. Inject your own swaps.
+4. Force a measurable cross-pool price difference.
 
-=== Results: 2 passed, 0 failed ===
+Without that setup, Sepolia mostly validates plumbing, not trading behavior.
 
-SMOKE TEST PASSED — funnel is live on Arbitrum Sepolia
-```
+## Why the Anvil Fork Was the Right Move
 
-> **Why simulation/submission metrics stay at 0 on testnet:** Arbitrum Sepolia
-> has very little real DEX liquidity. The sequencer feed is live and we detect
-> swaps, but genuine two-hop price dislocations above the profit threshold are
-> rare to non-existent. This is expected — the goal of Phase 9 is funnel
-> validation, not profit generation.
+The mainnet fork gives you something Sepolia cannot:
 
----
+- real pool contracts
+- real liquidity layouts
+- real reserve data
+- realistic swap math
+- no real-money risk because the run stays in dry-run mode
 
-## Definition of Done
+That made it the correct bridge between pure tests and eventual mainnet operation.
 
-Phase 9.1 is complete when **all of the following are true**:
+## Bottom Line
 
-- [ ] `./scripts/smoke_test.sh` shows `PASS` for `opportunities_detected` within 5 minutes of startup
-- [ ] `./scripts/smoke_test.sh` shows `PASS` for `opportunities_cleared_threshold`
-- [ ] Bot runs for **10 minutes** with zero panics or unhandled errors in the log
-- [ ] Log file contains no `ERROR` lines (warnings are OK)
-- [ ] `./scripts/run_sepolia.sh` exits 0 on clean shutdown (Ctrl+C)
+Phase 9 proved that `arbx` can:
 
-Run for 10 minutes total:
+- connect to live Arbitrum infrastructure
+- seed and reconcile real pool state
+- detect swaps through the live pipeline
+- discover two-hop candidate paths
+- run safely in dry-run mode against a mainnet fork
 
-```bash
-# In terminal 1 — run the bot
-./scripts/run_sepolia.sh
-
-# In terminal 2 — watch the funnel
-watch -n 30 ./scripts/smoke_test.sh
-
-# After 10 minutes, Ctrl+C terminal 1
-# Verify exit code
-echo "Exit code: $?"
-```
-
----
-
-## Funnel Diagnosis
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `opportunities_detected = 0` after 5 min | Feed not connecting | Check `ARBITRUM_SEPOLIA_RPC_URL`; look for `ERROR` in log |
-| `opportunities_detected > 0` but `cleared_threshold = 0` | Profit floor too high for testnet | Already set to `0.001` in `sepolia.toml` — check gas estimation |
-| Panic in log | Bug in pipeline | Paste panic to issue tracker with full log |
-| `ERROR: RPC rate limit` | Hit free-tier limit | Rotate to QuickNode free tier |
-
----
-
-## Useful Commands
-
-```bash
-# Tail live logs
-tail -f logs/sepolia_*.log | grep -v DEBUG
-
-# Check metrics manually
-curl -s http://localhost:9090/metrics | grep -v '^#'
-
-# Run ignored testnet integration test (requires live RPC + deployed contract)
-cargo test testnet_full_pipeline_smoke_test -- --ignored --nocapture
-
-# Check bot process
-pgrep -la arbx
-```
-
----
-
-## Next Step: Phase 10 — Mainnet Launch
-
-Once Phase 9 definition of done is satisfied:
-
-1. Review `scripts/deploy-mainnet.sh` — it requires typing `deploy mainnet` to confirm
-2. Review `scripts/run-mainnet.sh` — it requires typing `run mainnet` to confirm
-3. Start with dry-run: `./scripts/run-mainnet.sh --dry-run` for one hour
-4. Monitor funnel; only move to live mode when dry-run shows healthy metrics
-5. Set `ARBX_BUDGET_USD=60` — kill switch triggers automatically at budget exhaustion
-
-See [SSOT.md](SSOT.md) Phase 10 for the full mainnet launch checklist.
+Phase 9 did **not** prove that the bot has already captured a live profitable arbitrage. That proof belongs to mainnet execution, which is why Phase 10 focused on explicit confirmations, budget controls, and clean shutdown behavior before any real-money run.
